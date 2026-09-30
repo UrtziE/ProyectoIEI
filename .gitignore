@@ -8,6 +8,9 @@
 # --- Dependencias  ---
 node_modules/
 
+# --- Código compilado ---
+dist/
+
 # --- Variables de entorno y secretos ---
 #EZ DUGU JARRIKO, EZ DELAKO BENETAZKO PROIEKTU BAT: .env
 
