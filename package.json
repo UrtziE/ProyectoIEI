@@ -6,7 +6,8 @@
     "build": "tsc",
     "start": "npm run build && node dist/server.js",
     "dev": "tsx watch src/server.ts",
-    "extract:can": "tsx src/extractors/extractorCAN.ts"
+    "extract:can": "tsx src/extractors/extractorCAN.ts",
+    "extract:cat": "tsx src/extractors/extractorCat.ts"
   },
   "dependencies": {
     "convert-csv-to-json": "^4.90.0",
