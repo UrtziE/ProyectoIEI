@@ -5,12 +5,21 @@ import connectDB from '../config/database';
 import Entidad, { Ambito } from '../models/Entidad';
 import Localidad from '../models/Localidad';
 import Provincia from '../models/Provincia';
+import vaciarBaseDatos from '../utils/vaciarBaseDatos';
 
 const UNKNOWN_VALUE = '_U';
 const DEFAULT_CAN_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/Can.json');
 
 interface CanRecord {
     denominacion?: string;
+    numero_registro?: string;
+    direccion_tipo_via?: string;
+    direccion_nombre_via?: string;
+    direccion_numero?: string;
+    direccion_complemento?: string;
+    direccion_isla_nombre?: string;
+    telefono_1?: string;
+    telefono_2?: string;
     pagina_web?: string;
     area_nombre?: string;
     subarea_nombre?: string;
@@ -67,6 +76,43 @@ const getAmbito = (area: string, subarea: string | undefined): Ambito => {
     throw new Error(`No existe un mapping de ambito para area "${area}" y subarea "${subarea ?? UNKNOWN_VALUE}".`);
 };
 
+const getDireccion = (record: CanRecord): string => {
+    const via = [
+        record.direccion_tipo_via,
+        record.direccion_nombre_via,
+        record.direccion_numero
+    ]
+        .map(optionalCopiedValue)
+        .filter((value): value is string => value !== undefined)
+        .join(' ');
+    const ubicacion = [
+        record.direccion_complemento,
+        record.direccion_municipio_nombre,
+        record.direccion_provincia_nombre
+    ]
+        .map(optionalCopiedValue)
+        .filter((value): value is string => value !== undefined)
+        .join(', ');
+
+    return [via, ubicacion].filter((value) => value !== '').join(', ');
+};
+
+const getContactOrDescription = (parte1: string | undefined, parte2: string |undefined): string => {
+    const parte1Value = optionalCopiedValue(parte1);
+    const parte2Value = optionalCopiedValue(parte2);
+    if (parte1Value && parte2Value) {
+        return parte1Value + ' / ' + parte2Value;
+    }  
+    if (parte1Value) {
+        return parte1Value;
+    }
+    if (parte2Value) {
+        return parte2Value;
+    }
+    return 'No disponible';
+};
+
+
 const readCanFile = async (filePath: string): Promise<CanRecord[]> => {
     const content = await fs.readFile(filePath, 'utf8');
     const parsed: unknown = JSON.parse(content);
@@ -80,6 +126,8 @@ const readCanFile = async (filePath: string): Promise<CanRecord[]> => {
 
 export const extractCAN = async (filePath = DEFAULT_CAN_FILE): Promise<ImportSummary> => {
     const records = await readCanFile(filePath);
+    await vaciarBaseDatos();
+
     const summary: ImportSummary = {
         provincias: 0,
         localidades: 0,
@@ -93,7 +141,9 @@ export const extractCAN = async (filePath = DEFAULT_CAN_FILE): Promise<ImportSum
         const area = asRequiredString(record.area_nombre, 'area_nombre', index);
         const ambito = getAmbito(area, optionalCopiedValue(record.subarea_nombre));
         const url = optionalCopiedValue(record.pagina_web);
-
+        const direccion = getDireccion(record);
+        const descripcion = getContactOrDescription(record.subarea_nombre, record.area_nombre);
+        const contacto= getContactOrDescription(record.telefono_1, record.telefono_2);
         const provincia = await Provincia.findOneAndUpdate(
             { nombre: provinciaNombre },
             { nombre: provinciaNombre },
@@ -111,6 +161,9 @@ export const extractCAN = async (filePath = DEFAULT_CAN_FILE): Promise<ImportSum
         const entidadData = {
             nombre,
             ambito,
+            direccion,
+            descripcion,
+            contacto,
             localidad: localidad._id,
             ...(url !== undefined
                 ? { URL: url }
