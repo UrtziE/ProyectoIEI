@@ -1,15 +1,16 @@
 import mongoose, { Document, Model } from 'mongoose';
 
 export interface ProvinciaDocument extends Document {
-    codigo: string;
+    codigo: mongoose.Types.ObjectId;
     nombre: string;
 }
 
 const ProvinciaSchema = new mongoose.Schema<ProvinciaDocument>({
     codigo: {
-        type: String,
+        type: mongoose.Schema.Types.ObjectId,
         required: [true, 'El código de la provincia es necesario.'],
-        unique: true
+        unique: true,
+        default: () => new mongoose.Types.ObjectId()
     },
     nombre: {
         type: String,
