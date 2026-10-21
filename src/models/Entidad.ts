@@ -18,7 +18,7 @@ export const ambitos = [
 export type Ambito = typeof ambitos[number];
 
 export interface EntidadDocument extends Document {
-    cod_entidad: string;
+    cod_entidad: mongoose.Types.ObjectId;
     nombre: string;
     ambito: Ambito;
     direccion?: string;
@@ -33,9 +33,10 @@ export interface EntidadDocument extends Document {
 
 const EntidadSchema = new mongoose.Schema<EntidadDocument>({
     cod_entidad: {
-        type: String,
+        type: mongoose.Schema.Types.ObjectId,
         required: [true, 'El código de entidad es necesario.'],
-        unique: true
+        unique: true,
+        default: () => new mongoose.Types.ObjectId()
     },
     nombre: {
         type: String,
