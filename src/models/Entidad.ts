@@ -1,4 +1,12 @@
 import mongoose, { Document, Model } from 'mongoose';
+import {
+    enableUpdateValidation,
+    httpUrl,
+    latitude,
+    longitude,
+    nonBlankString,
+    postalCode
+} from '../middleware/schemaValidation';
 
 export const ambitos = [
     'MAYORES',
@@ -40,26 +48,30 @@ const EntidadSchema = new mongoose.Schema<EntidadDocument>({
     },
     nombre: {
         type: String,
-        required: [true, 'El nombre es necesario.']
+        required: [true, 'El nombre es necesario.'],
+        trim: true,
+        validate: nonBlankString
     },
     ambito: {
         type: String,
         required: true,
         enum: ambitos
     },
-    direccion: { type: String },
-    codigo_postal: { type: String },
-    longitud: { type: Number },
-    latitud: { type: Number },
-    descripcion: { type: String },
-    contacto: { type: String },
-    URL: { type: String },
+    direccion: { type: String, trim: true },
+    codigo_postal: { type: String, trim: true, validate: postalCode },
+    longitud: { type: Number, validate: longitude },
+    latitud: { type: Number, validate: latitude },
+    descripcion: { type: String, trim: true },
+    contacto: { type: String, trim: true },
+    URL: { type: String, trim: true },
     localidad: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Localidad',
         required: [true, 'La referencia a la localidad es obligatoria.']
     }
 });
+
+enableUpdateValidation(EntidadSchema);
 
 const Entidad: Model<EntidadDocument> = mongoose.model<EntidadDocument>('Entidad', EntidadSchema);
 
