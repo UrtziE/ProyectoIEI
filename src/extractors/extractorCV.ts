@@ -1,6 +1,7 @@
 import path from 'path';
 import csvToJson from 'convert-csv-to-json';
 import { EntidadDocument, Ambito } from '../models/Entidad';
+import Provincia from '../models/Provincia';
 
 const ruta = path.join(__dirname,  '..', 'public', 'fuentes_de_datos', 'CV.csv');
 
@@ -41,7 +42,7 @@ function construirContacto(registro: Record<string, string>){
     const email = registro.email?.trim() || 'N/A';
     return `Tel: ${tel} - Email: ${email}`;
 }
-/*
+
 export function extraer(fuente: Record<string,string>[]): EntidadDocument[]{
     const resultado: EntidadDocument[] = [];
 
@@ -58,11 +59,16 @@ export function extraer(fuente: Record<string,string>[]): EntidadDocument[]{
         direccion: registro.domici,
         descripcion: construirDescripcion(registro),
         contacto: construirContacto(registro),
+
+        var prov = Provincia{
+            nombre = registro.provincia;
+        }
+
         localidad: registro.municipio,
         });
     }
 
     return resultado;
-}*/
+}
 
 
