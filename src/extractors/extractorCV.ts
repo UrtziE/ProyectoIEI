@@ -66,29 +66,27 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
             continue; // sector desconocido: se descarta
         }
 
-        const codigoProvincia = registro.cod_ine_mun.slice(0, 2);
         const provincia = await Provincia.findOneAndUpdate(
-            { codigo: codigoProvincia },
-            { codigo: codigoProvincia, nombre: registro.provincia },
+            { nombre: registro.provincia },
+            { nombre: registro.provincia },
             { upsert: true, new: true, runValidators: true }
         )
 
         const localidad = await Localidad.findOneAndUpdate(
-            { codigo: registro.cod_ine_mun },
-            { codigo: registro.cod_ine_mun, nombre: registro.municipio, provincia: provincia!._id },
-            { upsert: true, new: true, runValidators: true }
+            { nombre: registro.municipio, provincia: provincia!._id },
+            { nombre: registro.municipio, provincia: provincia!._id },
+            { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
         )
 
         const entidad = await Entidad.findOneAndUpdate(
-            { cod_entidad: registro.id },
-            { cod_entidad: registro.id, 
-              nombre: registro.nombre, 
+            { nombre: registro.nombre, localidad: localidad!._id },
+            { nombre: registro.nombre, 
               ambito,
               direccion: registro.domici,
               descripcion: construirDescripcion(registro),
               contacto: construirContacto(registro),
               localidad: localidad!._id },
-            { upsert: true, new: true, runValidators: true }
+            { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
         );
         resultado.push(entidad!);
     }
