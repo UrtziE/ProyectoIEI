@@ -8,6 +8,7 @@
     "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
+    "convert-csv-to-json": "^4.94.0",
     "dotenv": "^17.2.3",
     "express": "^4.22.1",
     "mongoose": "^9.0.2"
