@@ -1,20 +1,24 @@
 import mongoose, { Document, Model } from 'mongoose';
+import { enableUpdateValidation, nonBlankString } from '../middleware/schemaValidation';
 
 export interface LocalidadDocument extends Document {
-    codigo: string;
+    codigo: mongoose.Types.ObjectId;
     nombre: string;
     provincia: mongoose.Types.ObjectId;
 }
 
 const LocalidadSchema = new mongoose.Schema<LocalidadDocument>({
     codigo: {
-        type: String,
+        type: mongoose.Schema.Types.ObjectId,
         required: [true, 'El código de la localidad es necesario.'],
-        unique: true
+        unique: true,
+        default: () => new mongoose.Types.ObjectId()
     },
     nombre: {
         type: String,
-        required: [true, 'El nombre de la localidad es necesario.']
+        required: [true, 'El nombre de la localidad es necesario.'],
+        trim: true,
+        validate: nonBlankString
     },
     provincia: {
         type: mongoose.Schema.Types.ObjectId,
@@ -22,6 +26,8 @@ const LocalidadSchema = new mongoose.Schema<LocalidadDocument>({
         required: [true, 'La referencia a la provincia es obligatoria.']
     }
 });
+
+enableUpdateValidation(LocalidadSchema);
 
 const Localidad: Model<LocalidadDocument> = mongoose.model<LocalidadDocument>('Localidad', LocalidadSchema);
 

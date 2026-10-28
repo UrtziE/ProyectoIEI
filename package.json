@@ -5,13 +5,16 @@
   "scripts": {
     "build": "tsc",
     "start": "npm run build && node dist/server.js",
-    "dev": "tsx watch src/server.ts"
+    "dev": "tsx watch src/server.ts",
+    "extract:can": "tsx src/extractors/extractorCAN.ts",
+    "extract:cat": "tsx src/extractors/extractorCat.ts"
   },
   "dependencies": {
     "convert-csv-to-json": "^4.94.0",
     "dotenv": "^17.2.3",
     "express": "^4.22.1",
-    "mongoose": "^9.0.2"
+    "mongoose": "^9.0.2",
+    "simple-xml-to-json": "^1.2.7"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
