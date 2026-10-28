@@ -27,7 +27,7 @@ const MAPEO_AMBITO: Record<string, Ambito>= {
 }
 
 function construirDescripcion(registro: Record<string, string>){
-    return registro.tipo_centro + "\n" + registro.clasificación + "\n" + registro.leyenda;
+    return registro.tipo_centro + "\n" + registro.clasificacion + "\n" + registro.leyenda;
 }
 
 function extraerTelefono(fuente: string): string[]{
@@ -45,7 +45,7 @@ function construirContacto(registro: Record<string, string>){
     return `Tel: ${tel} - Email: ${email}`;
 }
 
-export async function extraer(fuente: Record<string,string>[]): EntidadDocument[]{
+export async function extraer(fuente: Record<string,string>[]): Promise<EntidadDocument>{
     const resultado: EntidadDocument[] = [];
 
     for (const registro of fuente) {
