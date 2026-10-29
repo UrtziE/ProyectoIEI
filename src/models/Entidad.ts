@@ -58,10 +58,17 @@ const EntidadSchema = new mongoose.Schema<EntidadDocument>({
         required: true,
         enum: ambitos
     },
-    direccion: { type: String, trim: true },
-    codigo_postal: { type: String, trim: true, validate: postalCode },
-    longitud: { type: Number, validate: longitude },
-    latitud: { type: Number, validate: latitude },
+    direccion: { type: String, trim: true ,
+         required:[true,  'La dirección es obligatoria.' ]
+    },
+    codigo_postal: { type: String, trim: true, validate: postalCode , 
+        required:[true,  'El código postal es obligatorio.' ]},
+    longitud: { type: Number, validate: longitude, 
+         required:[true,  'La longitud es obligatoria.' ]
+    },
+    latitud: { type: Number, validate: latitude,
+        required:[true,  'La latitud es obligatoria.' ]
+     },
     descripcion: { type: String, trim: true },
     contacto: { type: String, trim: true },
     URL: { type: String, trim: true },
