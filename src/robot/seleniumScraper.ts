@@ -5,7 +5,7 @@ interface InfoGeocodificada {
   latitud: string;
   longitud: string;
 }
-export async function conseguirCoordenadasGPS(direccion : string) {
+export const conseguirCoordenadasGPS = async function conseguirCoordenadasGPS(direccion : string) {
      let driver = null; 
     const chromeOptions = new chrome.Options();
   let InfoGeocodificada: InfoGeocodificada = {
@@ -57,7 +57,12 @@ const infoWindow = await driver.findElement(By.id('info_window'));
         console.error('Error al obtener las coordenadas GPS:', error);
     }finally {
     await driver.quit();
-   return { InfoGeocodificada };
+   return { 
+    latitud: InfoGeocodificada.latitud,
+    longitud: InfoGeocodificada.longitud,
+    codigo_postal: InfoGeocodificada.codigoPostal
+
+    };
     }
 
 };
