@@ -27,11 +27,14 @@ chromeOptions.addArguments('--deny-permission-prompts');
         }
         await driver.sleep(2000);
         const inputDireccion = await driver.findElement(By.id('address'));
-        await inputDireccion.click();
+        // Se evita el clic "físico": un iframe de anuncios suele taparlo (ElementClickInterceptedError).
+        // Se desplaza a la vista y se escribe directamente, sin hacer click con el puntero.
+        await driver.executeScript("arguments[0].scrollIntoView({block: 'center'});", inputDireccion);
         await inputDireccion.clear();
         await inputDireccion.sendKeys(direccion);
         const btnObtener = await driver.findElement(By.css("button[onclick='codeAddress()']"));
-        await btnObtener.click();
+        // El botón también puede quedar tapado por anuncios: se pulsa vía JavaScript.
+        await driver.executeScript("arguments[0].click();", btnObtener);
         await driver.executeScript("window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });");
         await driver.sleep(2000);
 
