@@ -6,7 +6,7 @@ import Entidad, { Ambito } from '../models/Entidad';
 import Localidad from '../models/Localidad';
 import Provincia from '../models/Provincia';
 import vaciarBaseDatos from '../utils/vaciarBaseDatos';
-
+import {conseguirCoordenadasGPS} from '../robot/seleniumScraper'
 const UNKNOWN_VALUE = '_U';
 const DEFAULT_CAN_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/Can.json');
 
@@ -49,29 +49,64 @@ const optionalCopiedValue = (value: string | undefined): string | undefined => {
     return value.trim();
 };
 
+const normalizarCategoria = (valor: string | undefined): string => (valor ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('es')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+interface ReglaAmbito {
+    area?: string;
+    subarea?: string;
+    ambito: Ambito;
+}
+
+// Cada objeto combina sus campos con AND. Las reglas de un mismo ámbito son OR.
+const REGLAS_AMBITO: ReglaAmbito[] = [
+    { area: 'Tercera Edad', ambito: 'MAYORES' },
+    { area: 'Discapacidad', ambito: 'DISCAPACIDAD' },
+    { area: 'Menores Y Juventud', ambito: 'INFANCIA_Y_JUVENTUD' },
+    { area: 'Mujer', ambito: 'MUJER' },
+    { area: 'Exclusión Social', ambito: 'INCLUSION_SOCIAL' },
+    { area: 'Drogodependencia', ambito: 'SALUD_Y_ATENCION_SOCIOSANITARIA' },
+    { area: 'Voluntariado', ambito: 'VOLUNTARIADO_Y_PARTICIPACION_COMUNITARIA' },
+    { subarea: 'Otros', ambito: 'VOLUNTARIADO_Y_PARTICIPACION_COMUNITARIA' },
+    {
+        area: 'Varios',
+        subarea: 'Comedores Sociales Casas Hogar Comunidades Religiosas Talleres Sociales Desarrollo Social E Inserción Social Y Fomento Y Empleo',
+        ambito: 'INCLUSION_SOCIAL'
+    },
+    { area: 'Varios', subarea: 'Migración', ambito: 'MIGRACION' },
+    { area: 'Varios', subarea: 'Discapacidad', ambito: 'DISCAPACIDAD' },
+    { area: 'Varios', subarea: 'Centros Ocupacionales', ambito: 'DISCAPACIDAD' },
+    { area: 'Varios', subarea: 'Asociaciones de Enfermos', ambito: 'SALUD_MENTAL' },
+    { area: 'Varios', subarea: 'Enfermos Relacionadas Con El Asilo Socio Sanitario Organizaciones Relacionadas Con Autoayuda Terapias Y Salud', ambito: 'SALUD_MENTAL' },
+    { area: 'Varios', subarea: 'Mujer', ambito: 'MUJER' },
+    { area: 'Varios', subarea: 'Exclusión Social II', ambito: 'INCLUSION_SOCIAL' },
+    { area: 'Varios', subarea: 'Asociaciones De Igualdad Lgtbi', ambito: 'INCLUSION_SOCIAL' },
+    { area: 'Varios', subarea: 'Asociaciones Sociales Casas Hogar Comunidades Religiosas Talleres Sociales Desarrollo Social E Inserción Social Y Fomento Y Empleo', ambito: 'INCLUSION_SOCIAL' },
+    { area: 'Varios', subarea: 'Ciencia Tecnología Investigación E Innovación Medio Ambiente Ecología Patrimonio Histórico Cultural', ambito: 'EDUCACION_Y_FORMACION' },
+    { area: 'Varios', subarea: 'Asociaciones De Trabajadores Empresarios Sindicatos Colegios Profesionales Universidades', ambito: 'EMPLEO_E_INSERCION_LABORAL' },
+    { area: 'Varios', subarea: 'Drogodependencia', ambito: 'SALUD_Y_ATENCION_SOCIOSANITARIA' },
+    { area: 'Varios', subarea: 'Asuntos Sanitarios', ambito: 'SALUD_Y_ATENCION_SOCIOSANITARIA' },
+    { area: 'Varios', subarea: 'Asociaciones Culturales', ambito: 'CULTURA_Y_DESARROLLO_COMUNITARIO' },
+    { area: 'Varios', subarea: 'Deportivas Socio Educativas Socio Culturales', ambito: 'CULTURA_Y_DESARROLLO_COMUNITARIO' },
+    { area: 'Varios', subarea: 'Asociaciones De Vecinos Y Juveniles', ambito: 'CULTURA_Y_DESARROLLO_COMUNITARIO' },
+    // El esquema incluye Varios como criterio OR para este ámbito genérico;
+    // debe evaluarse al final para respetar antes las subáreas más concretas.
+    { area: 'Varios', ambito: 'VOLUNTARIADO_Y_PARTICIPACION_COMUNITARIA' }
+];
+
 const getAmbito = (area: string, subarea: string | undefined): Ambito => {
-    switch (area) {
-        case 'Tercera Edad':
-            return 'MAYORES';
-        case 'Discapacidad':
-            return 'DISCAPACIDAD';
-        case 'Menores Y Juventud':
-            return 'INFANCIA_Y_JUVENTUD';
-        case 'Drogodependencia':
-            return 'SALUD_Y_ATENCION_SOCIOSANITARIA';
-        case 'Exclusión Social':
-            return 'INCLUSION_SOCIAL';
-        case 'Voluntariado':
-            return 'VOLUNTARIADO_Y_PARTICIPACION_COMUNITARIA';
-        case 'Varios':
-            if (subarea === 'Otros' || subarea === UNKNOWN_VALUE) {
-                return 'VOLUNTARIADO_Y_PARTICIPACION_COMUNITARIA';
-            }
-            if (subarea === 'Comedores Sociales Casas Hogar Comunidades Religiosas Talleres Sociales Desarrollo Social E Inserción Social Y Fomento Y Empleo') {
-                return 'INCLUSION_SOCIAL';
-            }
-            break;
-    }
+    const areaNormalizada = normalizarCategoria(area);
+    const subareaNormalizada = normalizarCategoria(subarea);
+    const regla = REGLAS_AMBITO.find(({ area: areaEsperada, subarea: subareaEsperada }) =>
+        (areaEsperada === undefined || areaNormalizada === normalizarCategoria(areaEsperada)) &&
+        (subareaEsperada === undefined || subareaNormalizada.includes(normalizarCategoria(subareaEsperada)))
+    );
+
+    if (regla) return regla.ambito;
 
     throw new Error(`No existe un mapping de ambito para area "${area}" y subarea "${subarea ?? UNKNOWN_VALUE}".`);
 };
@@ -144,6 +179,19 @@ export const extractCAN = async (filePath = DEFAULT_CAN_FILE): Promise<ImportSum
         const direccion = getDireccion(record);
         const descripcion = getContactOrDescription(record.subarea_nombre, record.area_nombre);
         const contacto= getContactOrDescription(record.telefono_1, record.telefono_2);
+        const coordenadas = await conseguirCoordenadasGPS(direccion);
+        const codigoPostal = coordenadas.codigo_postal?.trim();
+
+        if (!codigoPostal || (!codigoPostal.startsWith('35') && !codigoPostal.startsWith('38'))) {
+            console.warn(
+                `[CAN] Se omite el registro ${index + 1} ("${nombre}"): ` +
+                `código postal fuera de Canarias o no encontrado ("${codigoPostal ?? ''}").`
+            );
+            continue;
+        }
+
+        const longitud = coordenadas.longitud ? parseFloat(coordenadas.longitud) : undefined;
+        const latitud = coordenadas.latitud ? parseFloat(coordenadas.latitud) : undefined;
         const provincia = await Provincia.findOneAndUpdate(
             { nombre: provinciaNombre },
             { nombre: provinciaNombre },
@@ -162,6 +210,9 @@ export const extractCAN = async (filePath = DEFAULT_CAN_FILE): Promise<ImportSum
             nombre,
             ambito,
             direccion,
+            codigo_postal: codigoPostal,
+            longitud,
+            latitud,
             descripcion,
             contacto,
             localidad: localidad._id,
