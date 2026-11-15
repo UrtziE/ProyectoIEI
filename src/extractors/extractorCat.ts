@@ -6,9 +6,10 @@ import connectDB from '../config/database';
 import Entidad, { Ambito } from '../models/Entidad';
 import Localidad from '../models/Localidad';
 import Provincia from '../models/Provincia';
+import { conseguirCoordenadasGPS } from '../robot/seleniumScraper';
+import { clasificarAmbitosConIA } from '../utils/clasificarAmbito';
 
 const DEFAULT_CAT_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/Cat.xml');
-const CAT_AMBITO: Ambito = 'SIN_CLASIFICAR';
 
 const PROVINCE_BY_POSTAL_PREFIX: Record<string, string> = {
     '08': 'Barcelona',
@@ -16,6 +17,8 @@ const PROVINCE_BY_POSTAL_PREFIX: Record<string, string> = {
     '25': 'Lleida',
     '43': 'Tarragona'
 };
+
+// ---------- Tipos ----------
 
 interface ConvertedField {
     content?: string;
@@ -51,37 +54,51 @@ interface PreparedCatRecord {
     nombre: string;
     provincia: string;
     municipio: string;
-    codigoPostal?: string;
-    direccion?: string;
+    codigoPostal: string;
+    direccion: string;
     url?: string;
     contacto?: string;
     descripcion?: string;
     ambito: Ambito;
 }
 
-interface ImportSummary {
+interface Incidencia {
+    registro: string;
+    motivo: string;
+}
+
+interface Informe {
+    reparados: Incidencia[];  // el dato venía mal y se ha corregido
+    rechazados: Incidencia[]; // no se puede guardar
+    duplicados: Incidencia[]; // ya estaba repetido o ya existía
+}
+
+export interface ImportSummary extends Informe {
     provincias: number;
     localidades: number;
     entidades: number;
 }
+
+const newInforme = (): Informe => ({ reparados: [], rechazados: [], duplicados: [] });
+
+// ---------- Utilidades ----------
 
 const optionalValue = (value: string | undefined): string | undefined => {
     const normalized = value?.replace(/\s+/g, ' ').trim();
     return normalized ? normalized : undefined;
 };
 
-const requiredValue = (value: string | undefined, field: string, index: number): string => {
-    const normalized = optionalValue(value);
-    if (!normalized) {
-        throw new Error(`El registro CAT ${index + 1} no tiene un valor válido para ${field}.`);
-    }
+// Texto sin acentos, minúsculas, sin espacios ni símbolos (sirve para comparar y para claves)
+const normalize = (value: string): string =>
+    value.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '');
 
-    return normalized;
-};
+// ---------- Lectura del XML ----------
 
 /**
  * Convierte el XML con simple-xml-to-json y adapta la estructura children/content
  * que genera la librería a registros planos para que el extractor pueda usarlos.
+ * Solo lanza error si el fichero entero es inválido; un registro mal formado
+ * se devuelve vacío y se rechaza después, sin parar la carga.
  */
 export const readCatRecords = async (filePath = DEFAULT_CAT_FILE): Promise<CatRecord[]> => {
     const xml = await fs.readFile(filePath, 'utf8');
@@ -92,10 +109,10 @@ export const readCatRecords = async (filePath = DEFAULT_CAT_FILE): Promise<CatRe
         throw new Error(`El XML ${filePath} no contiene entidades en registre_ongd.`);
     }
 
-    return entities.map((entry, index) => {
+    return entities.map((entry) => {
         const fields = entry.entitat?.children;
         if (!Array.isArray(fields)) {
-            throw new Error(`El registro CAT ${index + 1} no contiene la etiqueta entitat esperada.`);
+            return {};
         }
 
         const values: Record<string, string | undefined> = {};
@@ -121,90 +138,347 @@ export const readCatRecords = async (filePath = DEFAULT_CAT_FILE): Promise<CatRe
     });
 };
 
-const provinceFromPostalCode = (postalCode: string, index: number): string => {
-    if (!/^\d{5}$/.test(postalCode)) {
-        throw new Error(`El registro CAT ${index + 1} tiene un código postal no válido: "${postalCode}".`);
+// ---------- Transformaciones del mapping ----------
+
+// Valida el CP y lo repara si se puede (p. ej. "8017" -> "08017", "08 017" -> "08017")
+const normalizePostalCode = (raw: string | undefined): { cp?: string; error?: string } => {
+    const digits = (raw ?? '').replace(/\D/g, '');
+
+    if (!digits) {
+        return { error: 'Código postal vacío' };
+    }
+    if (digits.length === 4) {
+        return { cp: `0${digits}` };
+    }
+    if (digits.length !== 5) {
+        return { error: `Código postal inválido: "${raw}"` };
     }
 
-    const province = PROVINCE_BY_POSTAL_PREFIX[postalCode.slice(0, 2)];
-    if (!province) {
-        throw new Error(`No se reconoce la provincia del código postal "${postalCode}" en el registro CAT ${index + 1}.`);
-    }
-
-    return province;
+    return { cp: digits };
 };
 
-const prepareRecords = (records: CatRecord[]): PreparedCatRecord[] => records.map((record, index) => {
-    const nombre = requiredValue(record.nombre, 'nom_de_l_entitat', index);
-    const municipio = requiredValue(record.municipio, 'municipi', index);
-    const codigoPostal = requiredValue(record.codigoPostal, 'codi_postal', index);
-    const provincia = provinceFromPostalCode(codigoPostal, index);
+const provinceFromPostalCode = (cp: string): string | undefined =>
+    PROVINCE_BY_POSTAL_PREFIX[cp.slice(0, 2)];
 
-    const descripcion = [
+// Un campo de teléfono puede traer varios números separados por / , ;
+const splitPhones = (value?: string): string[] =>
+    (value ?? '').split(/[\/,;]/).map((phone) => phone.trim()).filter(Boolean);
+
+const buildContacto = (record: CatRecord): string | undefined => {
+    const telefonos = [...new Set(splitPhones(record.telefono))];
+    const moviles = [...new Set(splitPhones(record.movil))].filter((movil) => !telefonos.includes(movil));
+
+    const parts = [
+        telefonos.length ? `Teléfono: ${telefonos.join(' / ')}` : undefined,
+        moviles.length ? `Móvil: ${moviles.join(' / ')}` : undefined,
+        record.email ? `Email: ${record.email}` : undefined
+    ].filter(Boolean);
+
+    return parts.length ? parts.join(' · ') : undefined;
+};
+
+const buildDescripcion = (record: CatRecord): string | undefined => {
+    const parts = [
         record.numeroRegistro ? `Número de registro: ${record.numeroRegistro}` : undefined,
         record.naturaleza ? `Naturaleza: ${record.naturaleza}` : undefined,
         record.cif ? `CIF: ${record.cif}` : undefined
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean);
 
-    const contacto = [
-        record.telefono ? `Teléfono: ${record.telefono}` : undefined,
-        record.movil ? `Móvil: ${record.movil}` : undefined,
-        record.email ? `Email: ${record.email}` : undefined
-    ].filter(Boolean).join(' · ');
+    return parts.length ? parts.join(' · ') : undefined;
+};
 
-    return {
-        nombre,
-        municipio,
-        provincia,
-        codigoPostal,
-        direccion: optionalValue(record.direccion),
-        url: optionalValue(record.web),
-        contacto: contacto || undefined,
-        descripcion: descripcion || undefined,
-        ambito: CAT_AMBITO
+// Palabras clave sin acentos ni espacios: en el XML los nombres vienen sin espacios.
+// Sustituir por la llamada a IA cuando esté lista.
+const AMBITO_KEYWORDS: Array<[Ambito, string[]]> = [
+    ['MAYORES', ['gentgran', 'mayores', 'ancians', 'terceraedad']],
+    ['DISCAPACIDAD', ['discapacit', 'minusval', 'sindromededown', 'autis']],
+    ['SALUD_MENTAL', ['salutmental', 'saludmental', 'psiquiat']],
+    ['INFANCIA_Y_JUVENTUD', ['infan', 'jove', 'juvent', 'nens', 'menors', 'esplai']],
+    ['MUJER', ['dones', 'mujer', 'muller', 'feminis']],
+    ['MIGRACION', ['migra', 'refugi', 'immigra', 'inmigra']],
+    ['EDUCACION_Y_FORMACION', ['educaci', 'formaci', 'escola', 'escuela']],
+    ['EMPLEO_E_INSERCION_LABORAL', ['ocupaci', 'empleo', 'inserci', 'laboral']],
+    ['SALUD_Y_ATENCION_SOCIOSANITARIA', ['sanit', 'salut', 'salud', 'cruzroja', 'creuroja']],
+    ['VOLUNTARIADO_Y_PARTICIPACION_COMUNITARIA', ['voluntari', 'comunitari']],
+    ['CULTURA_Y_DESARROLLO_COMUNITARIO', ['cultur', 'desenvolupament', 'desarrollo']]
+];
+
+const getAmbito = (nombre: string): Ambito => {
+    const text = normalize(nombre);
+
+    for (const [ambito, keywords] of AMBITO_KEYWORDS) {
+        if (keywords.some((keyword) => text.includes(keyword))) {
+            return ambito;
+        }
+    }
+
+    return 'SIN_CLASIFICAR';
+};
+
+// ---------- Fase 1: validar y preparar (sin MongoDB ni robot) ----------
+
+/**
+ * Nunca lanza errores por un registro malo: lo anota en el informe y sigue con el siguiente.
+ */
+const prepareRecords = (records: CatRecord[], informe: Informe): PreparedCatRecord[] => {
+    const prepared: PreparedCatRecord[] = [];
+    const seenRegistro = new Set<string>();
+    const seenNombre = new Set<string>();
+
+    records.forEach((record, index) => {
+        const nombre = optionalValue(record.nombre);
+        const municipio = optionalValue(record.municipio);
+        const id = nombre ?? record.numeroRegistro ?? `registro ${index + 1}`;
+
+        if (!nombre) {
+            informe.rechazados.push({ registro: id, motivo: 'Sin nombre de entidad' });
+            return;
+        }
+        if (!municipio) {
+            informe.rechazados.push({ registro: id, motivo: 'Sin municipio' });
+            return;
+        }
+
+        const direccion = optionalValue(record.direccion);
+        if (!direccion) {
+            informe.rechazados.push({ registro: id, motivo: 'Sin dirección (obligatoria en el esquema global)' });
+            return;
+        }
+
+        const postal = normalizePostalCode(record.codigoPostal);
+        if (!postal.cp) {
+            informe.rechazados.push({ registro: id, motivo: postal.error ?? 'Código postal inválido' });
+            return;
+        }
+        const provincia = provinceFromPostalCode(postal.cp);
+        if (!provincia) {
+            informe.rechazados.push({
+                registro: id,
+                motivo: `El código postal ${postal.cp} no corresponde a una provincia catalana`
+            });
+            return;
+        }
+
+        // Duplicados dentro del propio fichero
+        const nombreKey = `${normalize(nombre)}|${normalize(municipio)}`;
+        if (record.numeroRegistro && seenRegistro.has(record.numeroRegistro)) {
+            informe.duplicados.push({
+                registro: id,
+                motivo: `Número de registro ${record.numeroRegistro} repetido en el fichero`
+            });
+            return;
+        }
+        if (seenNombre.has(nombreKey)) {
+            informe.duplicados.push({ registro: id, motivo: 'Misma entidad y municipio repetidos en el fichero' });
+            return;
+        }
+        if (record.numeroRegistro) {
+            seenRegistro.add(record.numeroRegistro);
+        }
+        seenNombre.add(nombreKey);
+
+        // La reparación solo se anota si el registro sigue adelante (si se rechaza, no consta como reparado)
+        if (postal.cp !== record.codigoPostal) {
+            informe.reparados.push({
+                registro: id,
+                motivo: `Código postal "${record.codigoPostal}" corregido a "${postal.cp}"`
+            });
+        }
+
+        prepared.push({
+            nombre,
+            municipio,
+            provincia,
+            codigoPostal: postal.cp,
+            direccion,
+            url: optionalValue(record.web),
+            contacto: buildContacto(record),
+            descripcion: buildDescripcion(record),
+            ambito: getAmbito(nombre)
+        });
+    });
+
+    return prepared;
+};
+
+// ---------- Coordenadas (robot de Selenium) ----------
+
+interface Coordenadas {
+    latitud: number;
+    longitud: number;
+}
+
+const getCoordinates = async (record: PreparedCatRecord): Promise<Coordenadas | undefined> => {
+    const address = `${record.direccion}, ${record.codigoPostal} ${record.municipio}, ${record.provincia}`;
+
+    try {
+        const result = await conseguirCoordenadasGPS(address);
+        const latitud = Number(result.latitud);
+        const longitud = Number(result.longitud);
+
+        // El robot devuelve cadenas vacías cuando no encuentra la dirección
+        if (!result.latitud || !result.longitud || !Number.isFinite(latitud) || !Number.isFinite(longitud)) {
+            return undefined;
+        }
+
+        return { latitud, longitud };
+    } catch {
+        return undefined;
+    }
+};
+
+// ---------- Provincias y localidades (con caché y contadores correctos) ----------
+
+const createResolvers = (summary: ImportSummary) => {
+    // Las cachés viven dentro de la función: si se vacía la base de datos entre dos cargas, no quedan ids antiguos.
+    const provincias = new Map<string, mongoose.Types.ObjectId>();
+    const localidades = new Map<string, mongoose.Types.ObjectId>();
+
+    const localidadKey = (provinciaId: mongoose.Types.ObjectId, municipio: string): string =>
+        `${provinciaId}|${municipio}`;
+
+    // find: solo busca, no crea nada
+    const findProvinciaId = async (nombre: string): Promise<mongoose.Types.ObjectId | undefined> => {
+        const cached = provincias.get(nombre);
+        if (cached) {
+            return cached;
+        }
+
+        const doc = await Provincia.findOne({ nombre }).exec();
+        if (!doc) {
+            return undefined;
+        }
+
+        provincias.set(nombre, doc._id);
+        return doc._id;
     };
-});
+
+    const findLocalidadId = async (
+        provinciaId: mongoose.Types.ObjectId,
+        municipio: string
+    ): Promise<mongoose.Types.ObjectId | undefined> => {
+        const key = localidadKey(provinciaId, municipio);
+        const cached = localidades.get(key);
+        if (cached) {
+            return cached;
+        }
+
+        const doc = await Localidad.findOne({ nombre: municipio, provincia: provinciaId }).exec();
+        if (!doc) {
+            return undefined;
+        }
+
+        localidades.set(key, doc._id);
+        return doc._id;
+    };
+
+    // ensure: busca y, si no existe, la crea y SOLO entonces suma al contador
+    const ensureProvinciaId = async (nombre: string): Promise<mongoose.Types.ObjectId> => {
+        const existing = await findProvinciaId(nombre);
+        if (existing) {
+            return existing;
+        }
+
+        const doc = await Provincia.create({ nombre });
+        summary.provincias += 1;
+        provincias.set(nombre, doc._id);
+        return doc._id;
+    };
+
+    const ensureLocalidadId = async (
+        provinciaId: mongoose.Types.ObjectId,
+        municipio: string
+    ): Promise<mongoose.Types.ObjectId> => {
+        const existing = await findLocalidadId(provinciaId, municipio);
+        if (existing) {
+            return existing;
+        }
+
+        const doc = await Localidad.create({ nombre: municipio, provincia: provinciaId });
+        summary.localidades += 1;
+        localidades.set(localidadKey(provinciaId, municipio), doc._id);
+        return doc._id;
+    };
+
+    return { findProvinciaId, findLocalidadId, ensureProvinciaId, ensureLocalidadId };
+};
+
+// ---------- Fase 2: guardar en MongoDB ----------
 
 export const extractCAT = async (filePath = DEFAULT_CAT_FILE): Promise<ImportSummary> => {
-    // Primero se valida y normaliza todo el XML, para detectar errores antes de escribir en MongoDB.
-    const records = prepareRecords(await readCatRecords(filePath));
-    const summary: ImportSummary = { provincias: 0, localidades: 0, entidades: 0 };
+    const summary: ImportSummary = { provincias: 0, localidades: 0, entidades: 0, ...newInforme() };
+
+    // Primero se valida todo el XML; los registros erróneos quedan en el informe y no paran la carga.
+    const records = prepareRecords(await readCatRecords(filePath), summary);
+
+    // Ámbito con IA (Gemini), por lotes. Si la IA no está disponible o falla,
+    // se mantiene el ámbito calculado con palabras clave en prepareRecords.
+    const ambitosIA = await clasificarAmbitosConIA(records.map((record) => ({ nombre: record.nombre })));
+    records.forEach((record, index) => {
+        record.ambito = ambitosIA[index] ?? record.ambito;
+    });
+    console.log(
+        `[CAT] Ámbito: ${ambitosIA.filter(Boolean).length} clasificados por IA, ` +
+        `${ambitosIA.filter((ambito) => !ambito).length} por palabras clave.`
+    );
+
+    const resolvers = createResolvers(summary);
 
     for (const record of records) {
-        const provincia = await Provincia.findOneAndUpdate(
-            { nombre: record.provincia },
-            { nombre: record.provincia },
-            { upsert: true, new: true, setDefaultsOnInsert: true }
-        ).exec();
-        summary.provincias += 1;
+        try {
+            // 1) ¿Ya existe en el almacén de datos? Solo se consulta, sin crear provincia ni localidad todavía.
+            const provinciaExistente = await resolvers.findProvinciaId(record.provincia);
+            const localidadExistente = provinciaExistente
+                ? await resolvers.findLocalidadId(provinciaExistente, record.municipio)
+                : undefined;
 
-        const localidad = await Localidad.findOneAndUpdate(
-            { nombre: record.municipio, provincia: provincia._id },
-            { nombre: record.municipio, provincia: provincia._id },
-            { upsert: true, new: true, setDefaultsOnInsert: true }
-        ).exec();
-        summary.localidades += 1;
+            if (localidadExistente && await Entidad.exists({ nombre: record.nombre, localidad: localidadExistente })) {
+                summary.duplicados.push({ registro: record.nombre, motivo: 'Ya existe en el almacén de datos' });
+                continue;
+            }
 
-        const entidadData = {
-            nombre: record.nombre,
-            ambito: record.ambito,
-            localidad: localidad._id,
-            ...(record.codigoPostal ? { codigo_postal: record.codigoPostal } : {}),
-            ...(record.direccion ? { direccion: record.direccion } : {}),
-            ...(record.url ? { URL: record.url } : {}),
-            ...(record.contacto ? { contacto: record.contacto } : {}),
-            ...(record.descripcion ? { descripcion: record.descripcion } : {})
-        };
+            // 2) Coordenadas con el robot. Se hace al final (es lo más lento) y son obligatorias en Entidad.
+            const coords = await getCoordinates(record);
+            if (!coords) {
+                summary.rechazados.push({
+                    registro: record.nombre,
+                    motivo: `No se pudieron obtener las coordenadas de "${record.direccion}"`
+                });
+                continue;
+            }
 
-        await Entidad.findOneAndUpdate(
-            { nombre: record.nombre, localidad: localidad._id },
-            entidadData,
-            { upsert: true, new: true, setDefaultsOnInsert: true }
-        ).exec();
-        summary.entidades += 1;
+            // 3) Crear provincia y localidad si faltan (el contador solo sube al crearlas)
+            const provinciaId = await resolvers.ensureProvinciaId(record.provincia);
+            const localidadId = await resolvers.ensureLocalidadId(provinciaId, record.municipio);
+
+            // 4) Guardar la entidad
+            await Entidad.create({
+                nombre: record.nombre,
+                ambito: record.ambito,
+                direccion: record.direccion,
+                codigo_postal: record.codigoPostal,
+                latitud: coords.latitud,
+                longitud: coords.longitud,
+                localidad: localidadId,
+                ...(record.url ? { URL: record.url } : {}),
+                ...(record.contacto ? { contacto: record.contacto } : {}),
+                ...(record.descripcion ? { descripcion: record.descripcion } : {})
+            });
+            summary.entidades += 1;
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            summary.rechazados.push({ registro: record.nombre, motivo: `Error al guardar: ${message}` });
+        }
     }
 
     return summary;
+};
+
+const printIncidencias = (label: string, incidencias: Incidencia[]): void => {
+    incidencias.slice(0, 20).forEach((item) => console.log(`[CAT] ${label} - ${item.registro}: ${item.motivo}`));
+    if (incidencias.length > 20) {
+        console.log(`[CAT] ${label}: ... y ${incidencias.length - 20} más`);
+    }
 };
 
 const run = async (): Promise<void> => {
@@ -216,20 +490,32 @@ const run = async (): Promise<void> => {
         : DEFAULT_CAT_FILE;
 
     if (dryRun) {
-        const records = prepareRecords(await readCatRecords(filePath));
-        console.log(`[CAT] Validación correcta: ${records.length} entidades preparadas. No se ha conectado a MongoDB.`);
-        for (const record of records.slice(0, 3)) {
-            console.log(`- ${record.nombre} | ${record.municipio}, ${record.provincia} | CP ${record.codigoPostal}`);
-        }
+        const informe = newInforme();
+        const records = prepareRecords(await readCatRecords(filePath), informe);
+        console.log(
+            `[CAT] Validación: ${records.length} entidades preparadas, ${informe.reparados.length} reparadas, ` +
+            `${informe.rechazados.length} rechazadas y ${informe.duplicados.length} duplicadas. ` +
+            'No se ha conectado a MongoDB ni se ha lanzado el robot.'
+        );
+        printIncidencias('Reparado', informe.reparados);
+        printIncidencias('Rechazado', informe.rechazados);
+        printIncidencias('Duplicado', informe.duplicados);
         return;
     }
 
     await connectDB();
     const summary = await extractCAT(filePath);
     console.log(
-        `[CAT] Importación completada: ${summary.provincias} provincias, ` +
-        `${summary.localidades} localidades y ${summary.entidades} entidades.`
+        `[CAT] Importación completada: ${summary.provincias} provincias nuevas, ` +
+        `${summary.localidades} localidades nuevas y ${summary.entidades} entidades nuevas.`
     );
+    console.log(
+        `[CAT] Reparados: ${summary.reparados.length}, rechazados: ${summary.rechazados.length}, ` +
+        `duplicados: ${summary.duplicados.length}.`
+    );
+    printIncidencias('Reparado', summary.reparados);
+    printIncidencias('Rechazado', summary.rechazados);
+    printIncidencias('Duplicado', summary.duplicados);
 };
 
 if (require.main === module) {
