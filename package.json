@@ -10,7 +10,8 @@
     "extract:cat": "tsx src/extractors/extractorCat.ts"
   },
   "dependencies": {
-    "convert-csv-to-json": "^4.94.0",
+    "@google/genai": "^3.3.0",
+    "convert-csv-to-json": "^4.90.0",
     "dotenv": "^17.2.3",
     "express": "^4.22.1",
     "mongoose": "^9.0.2",

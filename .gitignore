@@ -7,6 +7,9 @@
 
 # --- Dependencias  ---
 node_modules/
+.env
+.env.*
+!.env.example
 
 # --- Código compilado ---
 dist/
