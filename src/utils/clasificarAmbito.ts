@@ -37,6 +37,25 @@ const RESPONSE_SCHEMA = {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+const summarizeError = (error: unknown): string => {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    try {
+        const parsed: unknown = JSON.parse(rawMessage);
+        if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
+            const detail = (parsed as { error?: { code?: number; message?: string } }).error;
+            if (detail?.code && detail.message) return `HTTP ${detail.code}: ${detail.message}`;
+        }
+    } catch {
+        // El error puede no tener formato JSON.
+    }
+    if (rawMessage) return rawMessage;
+    if (typeof error === 'object' && error !== null && 'error' in error) {
+        const detail = (error as { error?: { code?: number; message?: string } }).error;
+        if (detail?.code && detail.message) return `HTTP ${detail.code}: ${detail.message}`;
+    }
+    return String(error);
+};
+
 const buildPrompt = (batch: EntidadParaClasificar[]): string => {
     const lista = batch
         .map((item, index) => `${index}: ${item.nombre}${item.descripcion ? ` (${item.descripcion})` : ''}`)
@@ -48,7 +67,7 @@ const buildPrompt = (batch: EntidadParaClasificar[]): string => {
         `Ámbitos permitidos: ${ambitos.join(', ')}.`,
         'Reglas:',
         '- Usa exactamente uno de los ámbitos permitidos.',
-        '- Si el nombre no permite deducir el ámbito con razonable seguridad, usa SIN_CLASIFICAR. No inventes.',
+        '- Debes elegir siempre uno de los ámbitos permitidos usando el nombre y la descripción.',
         '- Los nombres pueden estar en castellano o catalán y a veces vienen sin espacios entre palabras.',
         '- Devuelve un elemento por organización, con su id (el número de la lista).',
         '',
@@ -99,7 +118,7 @@ export const clasificarAmbitosConIA = async (
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
-        console.warn('[IA] GEMINI_API_KEY no está definida: se usarán las palabras clave.');
+        console.warn('[IA] Sin GEMINI_API_KEY: se usará la clasificación local.');
         return results;
     }
     if (entidades.length === 0) {
@@ -119,9 +138,8 @@ export const clasificarAmbitosConIA = async (
                 });
                 break;
             } catch (error: unknown) {
-                const message = error instanceof Error ? error.message : String(error);
                 if (attempt === MAX_ATTEMPTS) {
-                    console.warn(`[IA] Lote ${start + 1}-${start + batch.length} sin clasificar: ${message}`);
+                    console.warn(`[IA] Lote ${start + 1}-${start + batch.length} no disponible (${summarizeError(error)}); se usará la clasificación local.`);
                 } else {
                     await sleep(DELAY_BETWEEN_BATCHES_MS * attempt * 2); // espera creciente (cuota por minuto)
                 }
@@ -133,5 +151,7 @@ export const clasificarAmbitosConIA = async (
         }
     }
 
+    const classifiedCount = results.filter((ambito) => ambito !== undefined).length;
+    console.log(`[IA] ${classifiedCount}/${entidades.length} entidades clasificadas por Gemini; ${entidades.length - classifiedCount} por clasificación local.`);
     return results;
 };

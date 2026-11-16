@@ -20,8 +20,7 @@ export const ambitos = [
     'EMPLEO_E_INSERCION_LABORAL',
     'SALUD_Y_ATENCION_SOCIOSANITARIA',
     'VOLUNTARIADO_Y_PARTICIPACION_COMUNITARIA',
-    'CULTURA_Y_DESARROLLO_COMUNITARIO',
-    'SIN_CLASIFICAR'
+    'CULTURA_Y_DESARROLLO_COMUNITARIO'
 ] as const;
 
 export type Ambito = typeof ambitos[number];
@@ -30,10 +29,10 @@ export interface EntidadDocument extends Document {
     cod_entidad: mongoose.Types.ObjectId;
     nombre: string;
     ambito: Ambito;
-    direccion?: string;
-    codigo_postal?: string;
-    longitud?: number;
-    latitud?: number;
+    direccion: string;
+    codigo_postal: string;
+    longitud: number;
+    latitud: number;
     descripcion?: string;
     contacto?: string;
     URL?: string;

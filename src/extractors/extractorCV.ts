@@ -8,13 +8,15 @@ import Entidad from '../models/Entidad';
 import mongoose from 'mongoose';
 import connectDB from '../config/database';
 import { conseguirCoordenadasGPS } from '../robot/seleniumScraper';
+import { red } from '../utils/terminalOutput';
+import { normalizarUrl } from '../utils/normalizarUrl';
 
 
 const PREFIJOS_CP_CV = ['03', '12', '46'];
 
-const ruta = path.join(__dirname,  '..', 'public', 'fuentes_de_datos', 'CV.csv');
+const ruta = path.resolve(process.cwd(), 'src', 'public', 'fuentes_de_datos', 'CV.csv');
 
-function extraerJsonCV(): Record<string,string>[]{
+export function extraerJsonCV(): Record<string,string>[]{
     const registros = csvToJson
         .fieldDelimiter(',')
         .supportQuotedField(true)
@@ -99,25 +101,28 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
     const resultado: EntidadDocument[] = [];
 
     for (const registro of fuente) {
+      try {
         const ambito = MAPEO_AMBITO[normalizar(registro.sector)];
         if (!ambito) {
-            console.warn(`[extractorCV] Sector desconocido, fila descartada: ${registro.sector}`);
+            console.warn(red(`[extractorCV] Sector desconocido, fila descartada: ${registro.sector}`));
             continue; // sector desconocido: se descarta
         }
 
         const direccionBusqueda = construirDireccionBusqueda(registro);
         const geo = await geocodificar(direccionBusqueda);
         if (!geo) {
-            console.warn(`[extractorCV] Sin coordenadas, fila descartada: "${registro.nombre}" (${direccionBusqueda})`);
+            console.warn(red(`[extractorCV] Sin coordenadas, fila descartada: "${registro.nombre}" (${direccionBusqueda})`));
             continue;
         }
-        if (!PREFIJOS_CP_CV.some((prefijo) => geo.codigoPostal.startsWith(prefijo))) {
-            console.warn(
-                `[extractorCV] Código postal fuera de la Comunitat Valenciana, fila descartada: ` +
+        if (!/^\d{5}$/.test(geo.codigoPostal) ||
+            !PREFIJOS_CP_CV.some((prefijo) => geo.codigoPostal.startsWith(prefijo))) {
+            console.warn(red(
+                `[extractorCV] Código postal inválido o fuera de la Comunitat Valenciana, fila descartada: ` +
                 `"${registro.nombre}" (CP "${geo.codigoPostal}")`
-            );
+            ));
             continue;
         }
+        const url = normalizarUrl(registro.web);
 
         const provincia = await Provincia.findOneAndUpdate(
             { nombre: registro.provincia },
@@ -141,10 +146,15 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
               longitud: geo.longitud,
               descripcion: construirDescripcion(registro),
               contacto: construirContacto(registro),
+              ...(url ? { URL: url } : {}),
               localidad: localidad!._id },
             { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
         );
         resultado.push(entidad!);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(red(`[extractorCV] Fila descartada: "${registro.nombre || 'sin nombre'}": ${message}`));
+      }
     }
 
     return resultado;

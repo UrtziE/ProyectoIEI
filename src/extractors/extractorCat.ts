@@ -9,6 +9,8 @@ import Provincia from '../models/Provincia';
 import { conseguirCoordenadasGPS } from '../robot/seleniumScraper';
 import { clasificarAmbitosConIA } from '../utils/clasificarAmbito';
 import vaciarBaseDatos from '../utils/vaciarBaseDatos';
+import { red } from '../utils/terminalOutput';
+import { normalizarUrl } from '../utils/normalizarUrl';
 
 const DEFAULT_CAT_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/Cat.xml');
 
@@ -54,7 +56,11 @@ interface PreparedCatRecord {
     url?: string;
     contacto?: string;
     descripcion?: string;
-    ambito: Ambito;
+    ambito?: Ambito;
+}
+
+interface ExtractOptions {
+    clearDatabase?: boolean;
 }
 
 interface Incidencia {
@@ -176,12 +182,12 @@ const AMBITO_KEYWORDS: Array<[Ambito, string[]]> = [
     ['CULTURA_Y_DESARROLLO_COMUNITARIO', ['cultur', 'desenvolupament', 'desarrollo']]
 ];
 
-const getAmbito = (nombre: string): Ambito => {
+const getAmbito = (nombre: string): Ambito | undefined => {
     const text = normalize(nombre);
     for (const [ambito, keywords] of AMBITO_KEYWORDS) {
         if (keywords.some((keyword) => text.includes(keyword))) return ambito;
     }
-    return 'SIN_CLASIFICAR';
+    return undefined;
 };
 
 /** Prepara y valida registros sin consultar MongoDB ni iniciar el navegador. */
@@ -226,7 +232,7 @@ const prepareRecords = (records: CatRecord[], summary: ImportSummary): PreparedC
             provincia: PROVINCE_BY_POSTAL_PREFIX[postal.cp.slice(0, 2)],
             codigoPostal: postal.cp,
             direccion,
-            url: optionalValue(record.web),
+            url: normalizarUrl(record.web),
             contacto: buildContacto(record),
             descripcion: buildDescripcion(record),
             ambito: getAmbito(nombre)
@@ -277,10 +283,13 @@ const ensureLocalidad = async (
 };
 
 /** Importa entidades válidas; cada registro falla de forma aislada. */
-export const extractCAT = async (filePath = DEFAULT_CAT_FILE): Promise<ImportSummary> => {
+export const extractCAT = async (
+    filePath = DEFAULT_CAT_FILE,
+    options: ExtractOptions = {}
+): Promise<ImportSummary> => {
     const summary = newSummary();
     const records = prepareRecords(await readCatRecords(filePath), summary);
-    await vaciarBaseDatos();
+    if (options.clearDatabase !== false) await vaciarBaseDatos();
     console.log(`[CAT] ${records.length} registros válidos preparados. Clasificando ámbitos...`);
     const ambitosIA = await clasificarAmbitosConIA(records.map(({ nombre, descripcion }) => ({ nombre, descripcion })));
     console.log('[CAT] Clasificación terminada. Geocodificando e importando entidades...');
@@ -288,9 +297,18 @@ export const extractCAT = async (filePath = DEFAULT_CAT_FILE): Promise<ImportSum
         record.ambito = ambitosIA[index] ?? record.ambito;
     });
 
-    for (const [index, record] of records.entries()) {
+    const recordsConAmbito = records.filter((record): record is PreparedCatRecord & { ambito: Ambito } => {
+        if (record.ambito) return true;
+        summary.rechazados.push({
+            registro: record.nombre,
+            motivo: 'No se pudo determinar un ámbito válido'
+        });
+        return false;
+    });
+
+    for (const [index, record] of recordsConAmbito.entries()) {
         try {
-            console.log(`[CAT] Geocodificando ${index + 1}/${records.length}: ${record.nombre}`);
+            console.log(`[CAT] Consultando ubicación ${index + 1}/${recordsConAmbito.length}: ${record.nombre}`);
             const provinciaExistente = await Provincia.findOne({ nombre: record.provincia }).exec();
             const localidadExistente = provinciaExistente
                 ? await Localidad.findOne({ nombre: record.municipio, provincia: provinciaExistente._id }).exec()
@@ -332,7 +350,7 @@ export const extractCAT = async (filePath = DEFAULT_CAT_FILE): Promise<ImportSum
 
 const printIncidencias = (label: string, incidencias: Incidencia[]): void => {
     incidencias.slice(0, 20).forEach(({ registro, motivo }) => {
-        console.log(`[CAT] ${label} - ${registro}: ${motivo}`);
+        console.log(red(`[CAT] ${label} - ${registro}: ${motivo}`));
     });
     if (incidencias.length > 20) console.log(`[CAT] ${label}: ... y ${incidencias.length - 20} más`);
 };

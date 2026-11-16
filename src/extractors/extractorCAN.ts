@@ -6,6 +6,8 @@ import Entidad, { Ambito } from '../models/Entidad';
 import Localidad from '../models/Localidad';
 import Provincia from '../models/Provincia';
 import vaciarBaseDatos from '../utils/vaciarBaseDatos';
+import { red } from '../utils/terminalOutput';
+import { normalizarUrl } from '../utils/normalizarUrl';
 import {conseguirCoordenadasGPS} from '../robot/seleniumScraper'
 const UNKNOWN_VALUE = '_U';
 const DEFAULT_CAN_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/Can.json');
@@ -31,6 +33,11 @@ interface ImportSummary {
     provincias: number;
     localidades: number;
     entidades: number;
+    rechazados: Array<{ registro: string; motivo: string }>;
+}
+
+interface ExtractOptions {
+    clearDatabase?: boolean;
 }
 
 const asRequiredString = (value: string | undefined, field: string, index: number): string => {
@@ -159,39 +166,43 @@ const readCanFile = async (filePath: string): Promise<CanRecord[]> => {
     return parsed as CanRecord[];
 };
 
-export const extractCAN = async (filePath = DEFAULT_CAN_FILE): Promise<ImportSummary> => {
+export const extractCAN = async (
+    filePath = DEFAULT_CAN_FILE,
+    options: ExtractOptions = {}
+): Promise<ImportSummary> => {
     const records = await readCanFile(filePath);
-    await vaciarBaseDatos();
+    if (options.clearDatabase !== false) await vaciarBaseDatos();
 
     const summary: ImportSummary = {
         provincias: 0,
         localidades: 0,
-        entidades: 0
+        entidades: 0,
+        rechazados: []
     };
 
     for (const [index, record] of records.entries()) {
+        try {
         const nombre = asRequiredString(record.denominacion, 'denominacion', index);
         const provinciaNombre = asRequiredString(record.direccion_provincia_nombre, 'direccion_provincia_nombre', index);
         const localidadNombre = asRequiredString(record.direccion_municipio_nombre, 'direccion_municipio_nombre', index);
         const area = asRequiredString(record.area_nombre, 'area_nombre', index);
         const ambito = getAmbito(area, optionalCopiedValue(record.subarea_nombre));
-        const url = optionalCopiedValue(record.pagina_web);
+        const url = normalizarUrl(record.pagina_web);
         const direccion = getDireccion(record);
         const descripcion = getContactOrDescription(record.subarea_nombre, record.area_nombre);
         const contacto= getContactOrDescription(record.telefono_1, record.telefono_2);
         const coordenadas = await conseguirCoordenadasGPS(direccion);
-        const codigoPostal = coordenadas.codigo_postal?.trim();
+        const codigoPostal = coordenadas.codigo_postal?.trim() ?? '';
 
-        if (!codigoPostal || (!codigoPostal.startsWith('35') && !codigoPostal.startsWith('38'))) {
-            console.warn(
-                `[CAN] Se omite el registro ${index + 1} ("${nombre}"): ` +
-                `código postal fuera de Canarias o no encontrado ("${codigoPostal ?? ''}").`
-            );
-            continue;
+        if (!/^\d{5}$/.test(codigoPostal) || (!codigoPostal.startsWith('35') && !codigoPostal.startsWith('38'))) {
+            throw new Error(`Código postal inválido o fuera de Canarias: "${codigoPostal}"`);
         }
 
         const longitud = coordenadas.longitud ? parseFloat(coordenadas.longitud) : undefined;
         const latitud = coordenadas.latitud ? parseFloat(coordenadas.latitud) : undefined;
+        if (longitud === undefined || latitud === undefined || !Number.isFinite(longitud) || !Number.isFinite(latitud)) {
+            throw new Error('No se obtuvieron coordenadas válidas');
+        }
         const provincia = await Provincia.findOneAndUpdate(
             { nombre: provinciaNombre },
             { nombre: provinciaNombre },
@@ -216,9 +227,7 @@ export const extractCAN = async (filePath = DEFAULT_CAN_FILE): Promise<ImportSum
             descripcion,
             contacto,
             localidad: localidad._id,
-            ...(url !== undefined
-                ? { URL: url }
-                : {})
+            ...(url ? { URL: url } : {})
         };
 
         await Entidad.findOneAndUpdate(
@@ -227,6 +236,12 @@ export const extractCAN = async (filePath = DEFAULT_CAN_FILE): Promise<ImportSum
             { upsert: true, new: true, setDefaultsOnInsert: true }
         ).exec();
         summary.entidades += 1;
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            const registro = record.denominacion?.trim() || `registro ${index + 1}`;
+            summary.rechazados.push({ registro, motivo: message });
+            console.warn(red(`[CAN] Rechazado ${registro}: ${message}`));
+        }
     }
 
     return summary;
@@ -241,7 +256,8 @@ const run = async (): Promise<void> => {
     const summary = await extractCAN(filePath);
     console.log(
         `[CAN] Importación completada: ${summary.provincias} provincias, ` +
-        `${summary.localidades} localidades y ${summary.entidades} entidades.`
+        `${summary.localidades} localidades y ${summary.entidades} entidades; ` +
+        `${summary.rechazados.length} rechazados.`
     );
 };
 

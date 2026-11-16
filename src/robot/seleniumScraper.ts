@@ -1,5 +1,6 @@
-const {Builder, Browser, By, Key, until} = require('selenium-webdriver'); 
+const {Builder, Browser, By, until} = require('selenium-webdriver');
 import chrome from 'selenium-webdriver/chrome';
+import { red } from '../utils/terminalOutput';
 interface InfoGeocodificada {
   codigoPostal: string;
   latitud: string;
@@ -13,10 +14,21 @@ export const conseguirCoordenadasGPS = async function conseguirCoordenadasGPS(di
         latitud: '',
         longitud: ''
     };
-chromeOptions.addArguments('--deny-permission-prompts');  
+chromeOptions.addArguments(
+    '--deny-permission-prompts',
+    '--disable-logging',
+    '--log-level=3',
+    '--remote-debugging-pipe'
+);
+chromeOptions.setChromeLogFile('NUL');
 
     try {
-        driver = await new Builder().forBrowser(Browser.CHROME).setChromeOptions(chromeOptions).build();
+        const chromeService = new chrome.ServiceBuilder().setStdio('ignore');
+        driver = await new Builder()
+            .forBrowser(Browser.CHROME)
+            .setChromeOptions(chromeOptions)
+            .setChromeService(chromeService)
+            .build();
         await driver.manage().setTimeouts({ pageLoad: 20000, script: 10000, implicit: 5000 });
         await driver.get('https://www.coordenadas-gps.com/');
         try {
@@ -48,20 +60,16 @@ const infoWindow = await driver.wait(until.elementLocated(By.id('info_window')),
         const lineaDireccion = textoCompleto.split(/Latitud:/i)[0];
         const cpMatch = lineaDireccion.match(/\b\d{5}\b/);
 
-        console.log("textoCompleto:", textoCompleto);
-        console.log("latMatch:", latMatch);
-        console.log("lngMatch:", lngMatch);
-        console.log("cpMatch:", cpMatch);
-
         const codigoPostal: string = cpMatch ? cpMatch[0] : '';
         const latitud: string = latMatch ? latMatch[1] : '';
         const longitud: string = lngMatch ? lngMatch[1] : '';
         InfoGeocodificada.codigoPostal = codigoPostal;
         InfoGeocodificada.latitud = latitud;
         InfoGeocodificada.longitud = longitud;
-        console.log("InfoGeocodificada:", InfoGeocodificada);
+        console.log(`[GPS] CP=${codigoPostal || 'N/D'} | lat=${latitud || 'N/D'} | lon=${longitud || 'N/D'}`);
  } catch (error) {
-        console.error('Error al obtener las coordenadas GPS:', error);
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(red(`[GPS] No se pudieron obtener coordenadas para "${direccion}": ${message}`));
     }finally {
     await driver.quit();
    return { 
