@@ -3,11 +3,13 @@ import { GoogleGenAI } from '@google/genai';
 import { Ambito, ambitos } from '../models/Entidad';
 
 dotenv.config({ path: '.env.local', quiet: true });
+dotenv.config({ quiet: true });
 
-const MODEL = process.env.GEMINI_MODEL ?? 'gemini-3.8-flash';
+const MODEL = process.env.GEMINI_MODEL ?? 'gemini-3.5-flash-lite';
 const BATCH_SIZE = 25;          // entidades por petición (la capa gratuita limita las peticiones, no las entidades)
 const DELAY_BETWEEN_BATCHES_MS = 4000;
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 1;
+const AI_TIMEOUT_MS = 30000;
 
 export interface EntidadParaClasificar {
     nombre: string;
@@ -62,7 +64,11 @@ const classifyBatch = async (ai: GoogleGenAI, batch: EntidadParaClasificar[]): P
         config: {
             temperature: 0,
             responseMimeType: 'application/json',
-            responseJsonSchema: RESPONSE_SCHEMA
+            responseJsonSchema: RESPONSE_SCHEMA,
+            httpOptions: {
+                timeout: AI_TIMEOUT_MS,
+                retryOptions: { attempts: 1 }
+            }
         }
     });
 

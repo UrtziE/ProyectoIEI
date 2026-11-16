@@ -17,6 +17,7 @@ chromeOptions.addArguments('--deny-permission-prompts');
 
     try {
         driver = await new Builder().forBrowser(Browser.CHROME).setChromeOptions(chromeOptions).build();
+        await driver.manage().setTimeouts({ pageLoad: 20000, script: 10000, implicit: 5000 });
         await driver.get('https://www.coordenadas-gps.com/');
         try {
             const btnCookies = await driver.wait(until.elementLocated(By.css('.fc-cta-consent')), 5000);
@@ -38,7 +39,7 @@ chromeOptions.addArguments('--deny-permission-prompts');
         await driver.executeScript("window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });");
         await driver.sleep(2000);
 
-const infoWindow = await driver.findElement(By.id('info_window'));
+const infoWindow = await driver.wait(until.elementLocated(By.id('info_window')), 10000);
         const textoCompleto = await infoWindow.getText();
         const latMatch = textoCompleto.match(/Latitud:\s*([-\d.]+)/i);
         const lngMatch = textoCompleto.match(/Longitud:\s*([-\d.]+)/i);
