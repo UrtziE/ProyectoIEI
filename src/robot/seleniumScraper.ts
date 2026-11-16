@@ -42,7 +42,10 @@ const infoWindow = await driver.findElement(By.id('info_window'));
         const textoCompleto = await infoWindow.getText();
         const latMatch = textoCompleto.match(/Latitud:\s*([-\d.]+)/i);
         const lngMatch = textoCompleto.match(/Longitud:\s*([-\d.]+)/i);
-        const cpMatch = textoCompleto.match(/\b\d{5}\b/);
+        // El CP se busca solo en la línea de la dirección (antes de "Latitud"): si la web no
+        // devuelve CP, la regex no debe coger 5 dígitos de los decimales de la latitud.
+        const lineaDireccion = textoCompleto.split(/Latitud:/i)[0];
+        const cpMatch = lineaDireccion.match(/\b\d{5}\b/);
 
         console.log("textoCompleto:", textoCompleto);
         console.log("latMatch:", latMatch);

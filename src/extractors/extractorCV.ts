@@ -7,6 +7,10 @@ import Entidad from '../models/Entidad';
 
 import mongoose from 'mongoose';
 import connectDB from '../config/database';
+import { conseguirCoordenadasGPS } from '../robot/seleniumScraper';
+
+
+const PREFIJOS_CP_CV = ['03', '12', '46'];
 
 const ruta = path.join(__dirname,  '..', 'public', 'fuentes_de_datos', 'CV.csv');
 
@@ -56,6 +60,41 @@ function construirContacto(registro: Record<string, string>){
     return `Tel: ${tel} - Email: ${email}`;
 }
 
+
+function nombreCastellano(nombre: string): string {
+    const partes = nombre.split('/');
+    return partes[partes.length - 1].trim();
+}
+
+function construirDireccionBusqueda(registro: Record<string, string>): string {
+    return [
+        registro.domici,
+        nombreCastellano(registro.municipio),
+        nombreCastellano(registro.provincia),
+        'España'
+    ].filter(Boolean).join(', ');
+}
+
+interface Geocodificacion {
+    codigoPostal: string;
+    latitud: number;
+    longitud: number;
+}
+
+
+async function geocodificar(direccion: string): Promise<Geocodificacion | null> {
+    for (let intento = 1; intento <= 2; intento += 1) {
+        const coords = await conseguirCoordenadasGPS(direccion);
+        const latitud = coords.latitud ? parseFloat(coords.latitud) : NaN;
+        const longitud = coords.longitud ? parseFloat(coords.longitud) : NaN;
+        const codigoPostal = coords.codigo_postal?.trim() ?? '';
+        if (!Number.isNaN(latitud) && !Number.isNaN(longitud) && codigoPostal) {
+            return { codigoPostal, latitud, longitud };
+        }
+    }
+    return null;
+}
+
 export async function extraer(fuente: Record<string,string>[]): Promise<EntidadDocument[]>{
     const resultado: EntidadDocument[] = [];
 
@@ -64,6 +103,20 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
         if (!ambito) {
             console.warn(`[extractorCV] Sector desconocido, fila descartada: ${registro.sector}`);
             continue; // sector desconocido: se descarta
+        }
+
+        const direccionBusqueda = construirDireccionBusqueda(registro);
+        const geo = await geocodificar(direccionBusqueda);
+        if (!geo) {
+            console.warn(`[extractorCV] Sin coordenadas, fila descartada: "${registro.nombre}" (${direccionBusqueda})`);
+            continue;
+        }
+        if (!PREFIJOS_CP_CV.some((prefijo) => geo.codigoPostal.startsWith(prefijo))) {
+            console.warn(
+                `[extractorCV] Código postal fuera de la Comunitat Valenciana, fila descartada: ` +
+                `"${registro.nombre}" (CP "${geo.codigoPostal}")`
+            );
+            continue;
         }
 
         const provincia = await Provincia.findOneAndUpdate(
@@ -83,6 +136,9 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
             { nombre: registro.nombre, 
               ambito,
               direccion: registro.domici,
+              codigo_postal: geo.codigoPostal,
+              latitud: geo.latitud,
+              longitud: geo.longitud,
               descripcion: construirDescripcion(registro),
               contacto: construirContacto(registro),
               localidad: localidad!._id },
