@@ -91,22 +91,39 @@ interface Geocodificacion {
     longitud: number;
 }
 
+interface Incidencia {
+    registro: string;
+    motivo: string;
+}
+
+const printRechazados = (rechazados: Incidencia[]): void => {
+    rechazados.slice(0, 20).forEach(({ registro, motivo }) => {
+        console.log(red(`[extractorCV] Rechazado - ${registro}: ${motivo}`));
+    });
+    if (rechazados.length > 20) {
+        console.log(`[extractorCV] Rechazado: ... y ${rechazados.length - 20} más`);
+    }
+};
+
 
 async function geocodificar(direccion: string): Promise<Geocodificacion | null> {
-    for (let intento = 1; intento <= 2; intento += 1) {
-        const coords = await conseguirCoordenadasGPS(direccion);
-        const latitud = coords.latitud ? parseFloat(coords.latitud) : NaN;
-        const longitud = coords.longitud ? parseFloat(coords.longitud) : NaN;
-        const codigoPostal = coords.codigo_postal?.trim() ?? '';
-        if (!Number.isNaN(latitud) && !Number.isNaN(longitud)) {
-            return { codigoPostal, latitud, longitud };
-        }
+    const coords = await conseguirCoordenadasGPS(direccion);
+    const latitud = coords.latitud ? parseFloat(coords.latitud) : NaN;
+    const longitud = coords.longitud ? parseFloat(coords.longitud) : NaN;
+    const codigoPostal = coords.codigo_postal?.trim() ?? '';
+    if (!Number.isNaN(latitud) && !Number.isNaN(longitud)) {
+        return { codigoPostal, latitud, longitud };
     }
     return null;
 }
 
 export async function extraer(fuente: Record<string,string>[]): Promise<EntidadDocument[]>{
     const resultado: EntidadDocument[] = [];
+    const rechazados: Incidencia[] = [];
+    const registrarRechazo = (registro: string, motivo: string): void => {
+        rechazados.push({ registro, motivo });
+        console.warn(red(`[extractorCV] Rechazado - ${registro}: ${motivo}`));
+    };
 
     for (const registro of fuente) {
       let provinciaNueva: mongoose.Types.ObjectId | undefined;
@@ -114,7 +131,10 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
       try {
         const ambito = MAPEO_AMBITO[normalizar(registro.sector)];
         if (!ambito) {
-            console.warn(red(`[extractorCV] Sector desconocido, fila descartada: ${registro.sector}`));
+            registrarRechazo(
+                registro.nombre || 'sin nombre',
+                `Sector desconocido: ${registro.sector}`
+            );
             continue; // sector desconocido: se descarta
         }
 
@@ -131,22 +151,25 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
         }
         const geo = await geocodificar(direccionBusqueda);
         if (!geo) {
-            console.warn(red(`[extractorCV] Sin coordenadas, fila descartada: "${registro.nombre}" (${direccionBusqueda})`));
+            registrarRechazo(
+                registro.nombre || 'sin nombre',
+                `Sin coordenadas (${direccionBusqueda})`
+            );
             continue;
         }
         if (!geo.codigoPostal) {
-            console.warn(red(
-                `[extractorCV] Sin código postal, fila descartada: ` +
-                `"${registro.nombre}" (${direccionBusqueda})`
-            ));
+            registrarRechazo(
+                registro.nombre || 'sin nombre',
+                `Sin código postal (${direccionBusqueda})`
+            );
             continue;
         }
         if (!/^\d{5}$/.test(geo.codigoPostal) ||
             !PREFIJOS_CP_CV.some((prefijo) => geo.codigoPostal.startsWith(prefijo))) {
-            console.warn(red(
-                `[extractorCV] Código postal inválido o fuera de la Comunitat Valenciana, fila descartada: ` +
-                `"${registro.nombre}" (CP "${geo.codigoPostal}")`
-            ));
+            registrarRechazo(
+                registro.nombre || 'sin nombre',
+                `Código postal inválido o fuera de la Comunitat Valenciana: "${geo.codigoPostal}"`
+            );
             continue;
         }
         const url = normalizarUrl(registro.web);
@@ -186,10 +209,15 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
         if (localidadNueva) await Localidad.deleteOne({ _id: localidadNueva }).exec();
         if (provinciaNueva) await Provincia.deleteOne({ _id: provinciaNueva }).exec();
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(red(`[extractorCV] Fila descartada: "${registro.nombre || 'sin nombre'}": ${message}`));
+        registrarRechazo(registro.nombre || 'sin nombre', message);
       }
     }
 
+    console.log(
+        `[extractorCV] Resumen: ${resultado.length} entidades insertadas, ` +
+        `${rechazados.length} rechazadas.`
+    );
+    printRechazados(rechazados);
     return resultado;
 }
 

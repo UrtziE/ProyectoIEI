@@ -1,13 +1,13 @@
 const {Builder, Browser, By, until} = require('selenium-webdriver');
-import { WebDriver, WebElement } from 'selenium-webdriver';
+import { WebDriver } from 'selenium-webdriver';
 import chrome from 'selenium-webdriver/chrome';
-import { red } from '../utils/terminalOutput';
+import { orange, red } from '../utils/terminalOutput';
 interface InfoGeocodificada {
   codigoPostal: string;
   latitud: string;
   longitud: string;
 }
-export const conseguirCoordenadasGPS = async function conseguirCoordenadasGPS(direccion : string) {
+const buscarCoordenadasGPS = async function buscarCoordenadasGPS(direccion: string) {
      let driver: WebDriver | null = null;
     console.log(`[GPS] Buscando dirección: ${direccion}`);
     const chromeOptions = new chrome.Options();
@@ -16,6 +16,7 @@ export const conseguirCoordenadasGPS = async function conseguirCoordenadasGPS(di
         latitud: '',
         longitud: ''
     };
+
 chromeOptions.addArguments(
     '--deny-permission-prompts',
     '--disable-logging',
@@ -32,7 +33,7 @@ chromeOptions.setChromeLogFile('NUL');
             .setChromeService(chromeService)
             .build();
         if (!driver) throw new Error('No se pudo iniciar Selenium.');
-        const navegador = driver;
+        await driver.manage().window().maximize();
         await driver.manage().setTimeouts({ pageLoad: 20000, script: 10000, implicit: 5000 });
         await driver.get('https://www.coordenadas-gps.com/');
         try {
@@ -42,44 +43,14 @@ chromeOptions.setChromeLogFile('NUL');
             }
         } catch (e) {
         }
-        await driver.sleep(2000);
+        await driver.sleep(6000);
         const inputDireccion = await driver.findElement(By.id('address'));
-        // Se evita el clic "físico": un iframe de anuncios suele taparlo (ElementClickInterceptedError).
-        // Se desplaza a la vista y se escribe directamente, sin hacer click con el puntero.
-        await driver.executeScript("arguments[0].scrollIntoView({block: 'center'});", inputDireccion);
         await inputDireccion.clear();
         await inputDireccion.sendKeys(direccion);
-        const palabrasDireccion = direccion
-            .toLocaleLowerCase('es-ES')
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .split(/[^a-z0-9]+/)
-            .filter((palabra: string) => palabra.length >= 4 && !/^\d+$/.test(palabra))
-            .filter((palabra: string) => !['calle', 'avenida', 'carretera', 'españa'].includes(palabra));
-        const infoWindowsIniciales = await driver.findElements(By.id('info_window'));
-        const textoInicial = infoWindowsIniciales.length
-            ? await infoWindowsIniciales[0].getText()
-            : '';
         const btnObtener = await driver.findElement(By.css("button[onclick='codeAddress()']"));
-        // El botón también puede quedar tapado por anuncios: se pulsa vía JavaScript.
         await driver.executeScript("arguments[0].click();", btnObtener);
-        await driver.executeScript("window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });");
-        const infoWindow = await driver.wait<WebElement>(async () => {
-            const infoWindows = await navegador.findElements(By.id('info_window'));
-            if (!infoWindows.length) return false;
-            const texto = await infoWindows[0].getText();
-            const textoNormalizado = texto
-                .toLocaleLowerCase('es-ES')
-                .normalize('NFD')
-                .replace(/[\u0300-\u036f]/g, '');
-            const contieneDireccion = palabrasDireccion.some((palabra: string) =>
-                textoNormalizado.includes(palabra)
-            );
-            return texto && texto !== textoInicial && contieneDireccion &&
-                /Latitud:/i.test(texto) && /Longitud:/i.test(texto)
-                ? infoWindows[0]
-                : false;
-        }, 15000, `La web no devolvió un resultado válido para "${direccion}".`);
+        await driver.sleep(2000);
+        const infoWindow = await driver.wait(until.elementLocated(By.id('info_window')), 11000);
         const textoCompleto = await infoWindow.getText();
         const latMatch = textoCompleto.match(/Latitud:\s*([-\d.]+)/i);
         const lngMatch = textoCompleto.match(/Longitud:\s*([-\d.]+)/i);
@@ -106,6 +77,29 @@ chromeOptions.setChromeLogFile('NUL');
     codigo_postal: InfoGeocodificada.codigoPostal
 
     };
+
     }
 
+};
+
+export const conseguirCoordenadasGPS = async (direccion: string) => {
+    let resultado = {
+        latitud: '',
+        longitud: '',
+        codigo_postal: ''
+    };
+    let resultadoConCoordenadas = resultado;
+
+    for (let intento = 1; intento <= 2; intento += 1) {
+        resultado = await buscarCoordenadasGPS(direccion);
+        if (resultado.latitud && resultado.longitud) {
+            resultadoConCoordenadas = resultado;
+            if (resultado.codigo_postal) return resultado;
+        }
+        if (intento < 2) {
+            console.warn(orange(`[GPS] Reintentando búsqueda (${intento + 1}/2): "${direccion}"`));
+        }
+    }
+
+    return resultadoConCoordenadas;
 };

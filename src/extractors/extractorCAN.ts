@@ -41,6 +41,15 @@ interface ExtractOptions {
     clearDatabase?: boolean;
 }
 
+const printRechazados = (rechazados: ImportSummary['rechazados']): void => {
+    rechazados.slice(0, 20).forEach(({ registro, motivo }) => {
+        console.log(red(`[CAN] Rechazado - ${registro}: ${motivo}`));
+    });
+    if (rechazados.length > 20) {
+        console.log(`[CAN] Rechazado: ... y ${rechazados.length - 20} más`);
+    }
+};
+
 const asRequiredString = (
     value: string | undefined,
     field: string,
@@ -257,10 +266,16 @@ export const extractCAN = async (
             const message = error instanceof Error ? error.message : String(error);
             const registro = record.denominacion?.trim() || `registro ${index + 1} (sin denominación)`;
             summary.rechazados.push({ registro, motivo: message });
-            console.warn(red(`[CAN] Rechazado ${registro}: ${message}`));
+            console.warn(red(`[CAN] Rechazado - ${registro}: ${message}`));
         }
     }
 
+    console.log(
+        `[CAN] Resumen: ${summary.entidades} entidades insertadas, ` +
+        `${summary.rechazados.length} rechazados, ${summary.provincias} provincias nuevas y ` +
+        `${summary.localidades} localidades nuevas.`
+    );
+    printRechazados(summary.rechazados);
     return summary;
 };
 

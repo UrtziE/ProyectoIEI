@@ -11,7 +11,7 @@ import { clasificarAmbitosConIA } from '../utils/clasificarAmbito';
 import vaciarBaseDatos from '../utils/vaciarBaseDatos';
 import { green, orange, red } from '../utils/terminalOutput';
 import { normalizarUrl } from '../utils/normalizarUrl';
-import { normalizarDireccion } from '../utils/normalizarDireccion';
+import { normalizarDireccion, separarPalabrasPegadas } from '../utils/normalizarDireccion';
 
 const DEFAULT_CAT_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/Entitats_ONGD_pretty.xml');
 
@@ -92,6 +92,11 @@ const optionalValue = (value: string | undefined): string | undefined => {
     return normalized || undefined;
 };
 
+const normalizarTextoCat = (value: string | undefined): string | undefined => {
+    const normalized = optionalValue(value);
+    return normalized ? separarPalabrasPegadas(normalized) : undefined;
+};
+
 const normalize = (value: string): string => value
     .toLowerCase()
     .normalize('NFD')
@@ -118,12 +123,12 @@ export const readCatRecords = async (filePath = DEFAULT_CAT_FILE): Promise<CatRe
 
         return {
             numeroRegistro: values.n_mero_registre,
-            nombre: values.nom_de_l_entitat,
-            naturaleza: values.naturalesa,
+            nombre: normalizarTextoCat(values.nom_de_l_entitat),
+            naturaleza: normalizarTextoCat(values.naturalesa),
             cif: values.cif_entitat,
-            direccion: values.adre_a,
+            direccion: normalizarTextoCat(values.adre_a),
             codigoPostal: values.codi_postal,
-            municipio: values.municipi,
+            municipio: normalizarTextoCat(values.municipi),
             telefono: values.tel_fon,
             movil: values.tel_fon_m_bil,
             email: values.correu_electr_nic,
@@ -203,6 +208,7 @@ const prepareRecords = (records: CatRecord[], summary: ImportSummary): PreparedC
         const label = nombre ?? optionalValue(record.numeroRegistro) ?? `registro ${index + 1}`;
         const reject = (motivo: string): void => {
             summary.rechazados.push({ registro: label, motivo });
+            console.warn(red(`[CAT] Rechazado - ${label}: ${motivo}`));
         };
 
         if (!nombre) return reject('Sin nombre de entidad');
@@ -222,6 +228,7 @@ const prepareRecords = (records: CatRecord[], summary: ImportSummary): PreparedC
         const entityKey = `${normalize(nombre)}|${normalize(municipio)}`;
         if ((registrationKey && seenRegistration.has(registrationKey)) || seenNameAndTown.has(entityKey)) {
             summary.duplicados.push({ registro: label, motivo: 'Registro duplicado dentro del fichero' });
+            console.warn(red(`[CAT] Duplicado - ${label}: Registro duplicado dentro del fichero`));
             return;
         }
         if (registrationKey) seenRegistration.add(registrationKey);
@@ -254,9 +261,11 @@ const getCoordinates = async (record: PreparedCatRecord): Promise<Coordenadas | 
             `[CAT] Dirección adaptada para la búsqueda: "${record.direccion}" -> "${direccionNormalizada}"`
         ));
     }
-    const ubicacion = normalize(record.municipio) === normalize(record.provincia)
-        ? record.municipio
-        : `${record.municipio}, ${record.provincia}`;
+    const municipioNormalizado = normalizarDireccion(record.municipio);
+    const provinciaNormalizada = normalizarDireccion(record.provincia);
+    const ubicacion = normalize(municipioNormalizado) === normalize(provinciaNormalizada)
+        ? municipioNormalizado
+        : `${municipioNormalizado}, ${provinciaNormalizada}`;
     const address = `${direccionNormalizada}, ${record.codigoPostal} ${ubicacion}, España`;
     try {
         const result = await conseguirCoordenadasGPS(address);
@@ -293,6 +302,7 @@ export const extractCAT = async (
             registro: record.nombre,
             motivo: 'No se pudo determinar un ámbito válido'
         });
+        console.warn(red(`[CAT] Rechazado - ${record.nombre}: No se pudo determinar un ámbito válido`));
         return false;
     });
 
@@ -309,6 +319,9 @@ export const extractCAT = async (
             const coords = await getCoordinates(record);
             if (!coords) {
                 summary.rechazados.push({ registro: record.nombre, motivo: 'No se pudieron obtener coordenadas válidas' });
+                console.warn(red(
+                    `[CAT] Rechazado - ${record.nombre}: No se pudieron obtener coordenadas válidas`
+                ));
                 continue;
             }
 
@@ -347,10 +360,18 @@ export const extractCAT = async (
             if (provinciaNueva) await Provincia.deleteOne({ _id: provinciaNueva }).exec();
             const message = error instanceof Error ? error.message : String(error);
             summary.rechazados.push({ registro: record.nombre, motivo: `Error al guardar: ${message}` });
-            console.warn(red(`[CAT] No se pudo insertar "${record.nombre}": ${message}`));
+            console.warn(red(`[CAT] Rechazado - ${record.nombre}: Error al guardar: ${message}`));
         }
     }
 
+    console.log(
+        `[CAT] Resumen: ${summary.entidades} entidades insertadas, ` +
+        `${summary.reparados.length} reparados, ${summary.rechazados.length} rechazados y ` +
+        `${summary.duplicados.length} duplicados.`
+    );
+    printIncidencias('Reparado', summary.reparados);
+    printIncidencias('Rechazado', summary.rechazados);
+    printIncidencias('Duplicado', summary.duplicados);
     return summary;
 };
 
@@ -393,9 +414,6 @@ const run = async (): Promise<void> => {
         `[CAT] Reparados: ${summary.reparados.length}, rechazados: ${summary.rechazados.length}, ` +
         `duplicados: ${summary.duplicados.length}.`
     );
-    printIncidencias('Reparado', summary.reparados);
-    printIncidencias('Rechazado', summary.rechazados);
-    printIncidencias('Duplicado', summary.duplicados);
 };
 
 if (require.main === module) {
