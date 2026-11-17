@@ -9,7 +9,8 @@
     "extract:cv": "tsx src/extractors/extractorCV.ts",
     "extract:can": "tsx src/extractors/extractorCAN.ts",
     "extract:cat": "tsx src/extractors/extractorCat.ts",
-    "extract:all": "tsx src/extractors/extractAll.ts"
+    "extract:all": "tsx src/extractors/extractAll.ts",
+    "db:clear": "tsx src/utils/vaciarBaseDatos.ts"
   },
   "dependencies": {
     "@google/genai": "^3.3.0",

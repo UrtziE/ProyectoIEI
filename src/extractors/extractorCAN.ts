@@ -6,11 +6,12 @@ import Entidad, { Ambito } from '../models/Entidad';
 import Localidad from '../models/Localidad';
 import Provincia from '../models/Provincia';
 import vaciarBaseDatos from '../utils/vaciarBaseDatos';
-import { red } from '../utils/terminalOutput';
+import { green, orange, red } from '../utils/terminalOutput';
 import { normalizarUrl } from '../utils/normalizarUrl';
+import { normalizarDireccion } from '../utils/normalizarDireccion';
 import {conseguirCoordenadasGPS} from '../robot/seleniumScraper'
 const UNKNOWN_VALUE = '_U';
-const DEFAULT_CAN_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/Can.json');
+const DEFAULT_CAN_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/datos-abiertos-csv-segundo-trimestre26.json');
 
 interface CanRecord {
     denominacion?: string;
@@ -127,6 +128,10 @@ const getDireccion = (record: CanRecord): string => {
         .map(optionalCopiedValue)
         .filter((value): value is string => value !== undefined)
         .join(' ');
+    const viaNormalizada = normalizarDireccion(via);
+    if (viaNormalizada !== via) {
+        console.log(orange(`[CAN] Dirección adaptada para la búsqueda: "${via}" -> "${viaNormalizada}"`));
+    }
     const ubicacion = [
         record.direccion_complemento,
         record.direccion_municipio_nombre,
@@ -136,7 +141,7 @@ const getDireccion = (record: CanRecord): string => {
         .filter((value): value is string => value !== undefined)
         .join(', ');
 
-    return [via, ubicacion].filter((value) => value !== '').join(', ');
+    return [viaNormalizada, ubicacion].filter((value) => value !== '').join(', ');
 };
 
 const getContactOrDescription = (parte1: string | undefined, parte2: string |undefined): string => {
@@ -171,7 +176,7 @@ export const extractCAN = async (
     options: ExtractOptions = {}
 ): Promise<ImportSummary> => {
     const records = await readCanFile(filePath);
-    if (options.clearDatabase !== false) await vaciarBaseDatos();
+    if (options.clearDatabase === true) await vaciarBaseDatos();
 
     const summary: ImportSummary = {
         provincias: 0,
@@ -230,12 +235,12 @@ export const extractCAN = async (
             ...(url ? { URL: url } : {})
         };
 
-        await Entidad.findOneAndUpdate(
-            { nombre, localidad: localidad._id },
-            entidadData,
-            { upsert: true, new: true, setDefaultsOnInsert: true }
-        ).exec();
+        if (await Entidad.exists({ nombre, localidad: localidad._id })) {
+            throw new Error('Entidad duplicada: ya existe en la base de datos.');
+        }
+        await Entidad.create(entidadData);
         summary.entidades += 1;
+        console.log(green(`[CAN] Entidad insertada: "${nombre}"`));
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);
             const registro = record.denominacion?.trim() || `registro ${index + 1}`;

@@ -3,18 +3,16 @@ import connectDB from '../config/database';
 import { extraer, extraerJsonCV } from './extractorCV';
 import { extractCAN } from './extractorCAN';
 import { extractCAT } from './extractorCat';
-import vaciarBaseDatos from '../utils/vaciarBaseDatos';
 
 const run = async (): Promise<void> => {
     if (process.argv.includes('--help') || process.argv.includes('-h')) {
         console.log('Uso: npm run extract:all');
-        console.log('Importa CV, CAN y CAT en ese orden y vacía MongoDB una sola vez al comenzar.');
+        console.log('Importa CV, CAN y CAT en ese orden sin vaciar MongoDB.');
         return;
     }
 
-    console.log('[ALL] Conectando a MongoDB y vaciando la base de datos...');
+    console.log('[ALL] Conectando a MongoDB...');
     await connectDB();
-    await vaciarBaseDatos();
 
     const cvEntities = await extraer(extraerJsonCV());
     console.log(`[ALL] CV completado: ${cvEntities.length} entidades.`);

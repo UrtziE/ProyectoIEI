@@ -9,10 +9,11 @@ import Provincia from '../models/Provincia';
 import { conseguirCoordenadasGPS } from '../robot/seleniumScraper';
 import { clasificarAmbitosConIA } from '../utils/clasificarAmbito';
 import vaciarBaseDatos from '../utils/vaciarBaseDatos';
-import { red } from '../utils/terminalOutput';
+import { green, orange, red } from '../utils/terminalOutput';
 import { normalizarUrl } from '../utils/normalizarUrl';
+import { normalizarDireccion } from '../utils/normalizarDireccion';
 
-const DEFAULT_CAT_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/Cat.xml');
+const DEFAULT_CAT_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/Entitats_ONGD_pretty.xml');
 
 const PROVINCE_BY_POSTAL_PREFIX: Record<string, string> = {
     '08': 'Barcelona',
@@ -247,7 +248,13 @@ interface Coordenadas {
 }
 
 const getCoordinates = async (record: PreparedCatRecord): Promise<Coordenadas | undefined> => {
-    const address = `${record.direccion}, ${record.codigoPostal} ${record.municipio}, ${record.provincia}, España`;
+    const direccionNormalizada = normalizarDireccion(record.direccion);
+    if (direccionNormalizada !== record.direccion) {
+        console.log(orange(
+            `[CAT] Dirección adaptada para la búsqueda: "${record.direccion}" -> "${direccionNormalizada}"`
+        ));
+    }
+    const address = `${direccionNormalizada}, ${record.codigoPostal} ${record.municipio}, ${record.provincia}, España`;
     try {
         const result = await conseguirCoordenadasGPS(address);
         const latitud = Number(result.latitud);
@@ -289,7 +296,7 @@ export const extractCAT = async (
 ): Promise<ImportSummary> => {
     const summary = newSummary();
     const records = prepareRecords(await readCatRecords(filePath), summary);
-    if (options.clearDatabase !== false) await vaciarBaseDatos();
+    if (options.clearDatabase === true) await vaciarBaseDatos();
     console.log(`[CAT] ${records.length} registros válidos preparados. Clasificando ámbitos...`);
     const ambitosIA = await clasificarAmbitosConIA(records.map(({ nombre, descripcion }) => ({ nombre, descripcion })));
     console.log('[CAT] Clasificación terminada. Geocodificando e importando entidades...');
@@ -313,10 +320,6 @@ export const extractCAT = async (
             const localidadExistente = provinciaExistente
                 ? await Localidad.findOne({ nombre: record.municipio, provincia: provinciaExistente._id }).exec()
                 : null;
-            if (localidadExistente && await Entidad.exists({ nombre: record.nombre, localidad: localidadExistente._id })) {
-                summary.duplicados.push({ registro: record.nombre, motivo: 'Ya existe en la base de datos' });
-                continue;
-            }
 
             const coords = await getCoordinates(record);
             if (!coords) {
@@ -326,6 +329,9 @@ export const extractCAT = async (
 
             const provinciaId = provinciaExistente?._id ?? await ensureProvincia(record.provincia, summary);
             const localidadId = localidadExistente?._id ?? await ensureLocalidad(record.municipio, provinciaId, summary);
+            if (await Entidad.exists({ nombre: record.nombre, localidad: localidadId })) {
+                throw new Error('Entidad duplicada: ya existe en la base de datos.');
+            }
             await Entidad.create({
                 nombre: record.nombre,
                 ambito: record.ambito,
@@ -339,9 +345,11 @@ export const extractCAT = async (
                 ...(record.descripcion ? { descripcion: record.descripcion } : {})
             });
             summary.entidades += 1;
+            console.log(green(`[CAT] Entidad insertada: "${record.nombre}"`));
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);
             summary.rechazados.push({ registro: record.nombre, motivo: `Error al guardar: ${message}` });
+            console.warn(red(`[CAT] No se pudo insertar "${record.nombre}": ${message}`));
         }
     }
 
@@ -349,8 +357,9 @@ export const extractCAT = async (
 };
 
 const printIncidencias = (label: string, incidencias: Incidencia[]): void => {
+    const color = label === 'Reparado' ? orange : red;
     incidencias.slice(0, 20).forEach(({ registro, motivo }) => {
-        console.log(red(`[CAT] ${label} - ${registro}: ${motivo}`));
+        console.log(color(`[CAT] ${label} - ${registro}: ${motivo}`));
     });
     if (incidencias.length > 20) console.log(`[CAT] ${label}: ... y ${incidencias.length - 20} más`);
 };

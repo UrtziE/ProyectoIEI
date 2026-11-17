@@ -8,13 +8,14 @@ import Entidad from '../models/Entidad';
 import mongoose from 'mongoose';
 import connectDB from '../config/database';
 import { conseguirCoordenadasGPS } from '../robot/seleniumScraper';
-import { red } from '../utils/terminalOutput';
+import { green, orange, red } from '../utils/terminalOutput';
+import { normalizarDireccion } from '../utils/normalizarDireccion';
 import { normalizarUrl } from '../utils/normalizarUrl';
 
 
 const PREFIJOS_CP_CV = ['03', '12', '46'];
 
-const ruta = path.resolve(process.cwd(), 'src', 'public', 'fuentes_de_datos', 'CV.csv');
+const ruta = path.resolve(process.cwd(), 'src', 'public', 'fuentes_de_datos', 'entidades_CV.csv');
 
 export function extraerJsonCV(): Record<string,string>[]{
     const registros = csvToJson
@@ -68,12 +69,19 @@ function nombreCastellano(nombre: string): string {
     return partes[partes.length - 1].trim();
 }
 
+function construirUbicacionBusqueda(registro: Record<string, string>): string[] {
+    const municipio = nombreCastellano(registro.municipio);
+    const provincia = nombreCastellano(registro.provincia);
+    const ubicacion = [municipio];
+    if (normalizar(municipio) !== normalizar(provincia)) ubicacion.push(provincia);
+    ubicacion.push('España');
+    return ubicacion;
+}
+
 function construirDireccionBusqueda(registro: Record<string, string>): string {
     return [
-        registro.domici,
-        nombreCastellano(registro.municipio),
-        nombreCastellano(registro.provincia),
-        'España'
+        normalizarDireccion(registro.domici),
+        ...construirUbicacionBusqueda(registro)
     ].filter(Boolean).join(', ');
 }
 
@@ -90,7 +98,7 @@ async function geocodificar(direccion: string): Promise<Geocodificacion | null> 
         const latitud = coords.latitud ? parseFloat(coords.latitud) : NaN;
         const longitud = coords.longitud ? parseFloat(coords.longitud) : NaN;
         const codigoPostal = coords.codigo_postal?.trim() ?? '';
-        if (!Number.isNaN(latitud) && !Number.isNaN(longitud) && codigoPostal) {
+        if (!Number.isNaN(latitud) && !Number.isNaN(longitud)) {
             return { codigoPostal, latitud, longitud };
         }
     }
@@ -109,9 +117,26 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
         }
 
         const direccionBusqueda = construirDireccionBusqueda(registro);
+        const direccionOriginal = [
+            registro.domici,
+            ...construirUbicacionBusqueda(registro)
+        ].filter(Boolean).join(', ');
+        if (direccionBusqueda !== direccionOriginal) {
+            console.log(orange(
+                `[extractorCV] Dirección adaptada para la búsqueda: ` +
+                `"${direccionOriginal}" -> "${direccionBusqueda}"`
+            ));
+        }
         const geo = await geocodificar(direccionBusqueda);
         if (!geo) {
             console.warn(red(`[extractorCV] Sin coordenadas, fila descartada: "${registro.nombre}" (${direccionBusqueda})`));
+            continue;
+        }
+        if (!geo.codigoPostal) {
+            console.warn(red(
+                `[extractorCV] Sin código postal, fila descartada: ` +
+                `"${registro.nombre}" (${direccionBusqueda})`
+            ));
             continue;
         }
         if (!/^\d{5}$/.test(geo.codigoPostal) ||
@@ -136,21 +161,23 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
             { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
         )
 
-        const entidad = await Entidad.findOneAndUpdate(
-            { nombre: registro.nombre, localidad: localidad!._id },
-            { nombre: registro.nombre, 
-              ambito,
-              direccion: registro.domici,
-              codigo_postal: geo.codigoPostal,
-              latitud: geo.latitud,
-              longitud: geo.longitud,
-              descripcion: construirDescripcion(registro),
-              contacto: construirContacto(registro),
-              ...(url ? { URL: url } : {}),
-              localidad: localidad!._id },
-            { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
-        );
-        resultado.push(entidad!);
+        if (await Entidad.exists({ nombre: registro.nombre, localidad: localidad!._id })) {
+            throw new Error('Entidad duplicada: ya existe en la base de datos.');
+        }
+        const entidad = await Entidad.create({
+            nombre: registro.nombre,
+            ambito,
+            direccion: registro.domici,
+            codigo_postal: geo.codigoPostal,
+            latitud: geo.latitud,
+            longitud: geo.longitud,
+            descripcion: construirDescripcion(registro),
+            contacto: construirContacto(registro),
+            ...(url ? { URL: url } : {}),
+            localidad: localidad!._id
+        });
+        resultado.push(entidad);
+        console.log(green(`[extractorCV] Entidad insertada: "${registro.nombre}"`));
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(red(`[extractorCV] Fila descartada: "${registro.nombre || 'sin nombre'}": ${message}`));

@@ -8,6 +8,7 @@ interface InfoGeocodificada {
 }
 export const conseguirCoordenadasGPS = async function conseguirCoordenadasGPS(direccion : string) {
      let driver = null; 
+    console.log(`[GPS] Buscando dirección: ${direccion}`);
     const chromeOptions = new chrome.Options();
   let InfoGeocodificada: InfoGeocodificada = {
         codigoPostal: '',
