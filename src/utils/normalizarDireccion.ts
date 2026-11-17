@@ -20,6 +20,7 @@ export const normalizarDireccion = (direccion: string): string => {
         .replace(/\bC\s*\/\s*/gi, 'Calle ')
         .replace(/\bAvda?\.?\s+/gi, 'Avenida ')
         .replace(/\bCtra?\.?\s+/gi, 'Carretera ')
+        .replace(/\b(calle|avenida|carretera)\s+\1\b/gi, '$1')
         .replace(/\bN[º°o]\.?\s*/gi, '')
         .replace(/\b(?:número|num\.?)\s*/gi, '')
         .replace(/\bKm\.?\s*/gi, '')

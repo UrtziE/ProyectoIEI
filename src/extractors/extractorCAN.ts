@@ -41,12 +41,19 @@ interface ExtractOptions {
     clearDatabase?: boolean;
 }
 
-const asRequiredString = (value: string | undefined, field: string, index: number): string => {
-    if (!value || value === UNKNOWN_VALUE || value.trim() === '') {
-        throw new Error(`El registro ${index + 1} no tiene un valor válido para ${field}.`);
+const asRequiredString = (
+    value: string | undefined,
+    field: string,
+    index: number,
+    allowUnknownDescription = false
+): string => {
+    const trimmedValue = value?.trim();
+    const isUnknownDescription = trimmedValue ? /^desconocid/i.test(trimmedValue) : false;
+    if (!trimmedValue || trimmedValue === UNKNOWN_VALUE || (isUnknownDescription && !allowUnknownDescription)) {
+        throw new Error(`Falta un valor válido para el campo "${field}" en el registro ${index + 1}.`);
     }
 
-    return value.trim();
+    return trimmedValue;
 };
 
 const optionalCopiedValue = (value: string | undefined): string | undefined => {
@@ -101,8 +108,6 @@ const REGLAS_AMBITO: ReglaAmbito[] = [
     { area: 'Varios', subarea: 'Asociaciones Culturales', ambito: 'CULTURA_Y_DESARROLLO_COMUNITARIO' },
     { area: 'Varios', subarea: 'Deportivas Socio Educativas Socio Culturales', ambito: 'CULTURA_Y_DESARROLLO_COMUNITARIO' },
     { area: 'Varios', subarea: 'Asociaciones De Vecinos Y Juveniles', ambito: 'CULTURA_Y_DESARROLLO_COMUNITARIO' },
-    // El esquema incluye Varios como criterio OR para este ámbito genérico;
-    // debe evaluarse al final para respetar antes las subáreas más concretas.
     { area: 'Varios', ambito: 'VOLUNTARIADO_Y_PARTICIPACION_COMUNITARIA' }
 ];
 
@@ -119,7 +124,7 @@ const getAmbito = (area: string, subarea: string | undefined): Ambito => {
     throw new Error(`No existe un mapping de ambito para area "${area}" y subarea "${subarea ?? UNKNOWN_VALUE}".`);
 };
 
-const getDireccion = (record: CanRecord): string => {
+const getDireccion = (record: CanRecord, provincia: string, municipio: string): string => {
     const via = [
         record.direccion_tipo_via,
         record.direccion_nombre_via,
@@ -133,12 +138,9 @@ const getDireccion = (record: CanRecord): string => {
         console.log(orange(`[CAN] Dirección adaptada para la búsqueda: "${via}" -> "${viaNormalizada}"`));
     }
     const ubicacion = [
-        record.direccion_complemento,
-        record.direccion_municipio_nombre,
-        record.direccion_provincia_nombre
+        municipio,
+        ...(normalizarCategoria(municipio) === normalizarCategoria(provincia) ? [] : [provincia])
     ]
-        .map(optionalCopiedValue)
-        .filter((value): value is string => value !== undefined)
         .join(', ');
 
     return [viaNormalizada, ubicacion].filter((value) => value !== '').join(', ');
@@ -186,14 +188,21 @@ export const extractCAN = async (
     };
 
     for (const [index, record] of records.entries()) {
+        let provinciaNueva: mongoose.Types.ObjectId | undefined;
+        let localidadNueva: mongoose.Types.ObjectId | undefined;
         try {
         const nombre = asRequiredString(record.denominacion, 'denominacion', index);
-        const provinciaNombre = asRequiredString(record.direccion_provincia_nombre, 'direccion_provincia_nombre', index);
+        const provinciaNombre = asRequiredString(
+            record.direccion_provincia_nombre,
+            'direccion_provincia_nombre',
+            index,
+            true
+        );
         const localidadNombre = asRequiredString(record.direccion_municipio_nombre, 'direccion_municipio_nombre', index);
         const area = asRequiredString(record.area_nombre, 'area_nombre', index);
         const ambito = getAmbito(area, optionalCopiedValue(record.subarea_nombre));
         const url = normalizarUrl(record.pagina_web);
-        const direccion = getDireccion(record);
+        const direccion = getDireccion(record, provinciaNombre, localidadNombre);
         const descripcion = getContactOrDescription(record.subarea_nombre, record.area_nombre);
         const contacto= getContactOrDescription(record.telefono_1, record.telefono_2);
         const coordenadas = await conseguirCoordenadasGPS(direccion);
@@ -208,19 +217,20 @@ export const extractCAN = async (
         if (longitud === undefined || latitud === undefined || !Number.isFinite(longitud) || !Number.isFinite(latitud)) {
             throw new Error('No se obtuvieron coordenadas válidas');
         }
-        const provincia = await Provincia.findOneAndUpdate(
-            { nombre: provinciaNombre },
-            { nombre: provinciaNombre },
-            { upsert: true, new: true, setDefaultsOnInsert: true }
-        ).exec();
-        summary.provincias += 1;
+        const provinciaExistente = await Provincia.findOne({ nombre: provinciaNombre }).exec();
+        const provincia = provinciaExistente ?? await Provincia.create({ nombre: provinciaNombre });
+        if (!provinciaExistente) provinciaNueva = provincia._id;
+        if (!provinciaExistente) summary.provincias += 1;
 
-        const localidad = await Localidad.findOneAndUpdate(
+        const localidadExistente = await Localidad.findOne(
             { nombre: localidadNombre, provincia: provincia._id },
-            { nombre: localidadNombre, provincia: provincia._id },
-            { upsert: true, new: true, setDefaultsOnInsert: true }
         ).exec();
-        summary.localidades += 1;
+        const localidad = localidadExistente ?? await Localidad.create({
+            nombre: localidadNombre,
+            provincia: provincia._id
+        });
+        if (!localidadExistente) localidadNueva = localidad._id;
+        if (!localidadExistente) summary.localidades += 1;
 
         const entidadData = {
             nombre,
@@ -242,8 +252,10 @@ export const extractCAN = async (
         summary.entidades += 1;
         console.log(green(`[CAN] Entidad insertada: "${nombre}"`));
         } catch (error: unknown) {
+            if (localidadNueva) await Localidad.deleteOne({ _id: localidadNueva }).exec();
+            if (provinciaNueva) await Provincia.deleteOne({ _id: provinciaNueva }).exec();
             const message = error instanceof Error ? error.message : String(error);
-            const registro = record.denominacion?.trim() || `registro ${index + 1}`;
+            const registro = record.denominacion?.trim() || `registro ${index + 1} (sin denominación)`;
             summary.rechazados.push({ registro, motivo: message });
             console.warn(red(`[CAN] Rechazado ${registro}: ${message}`));
         }

@@ -1,4 +1,5 @@
 const {Builder, Browser, By, until} = require('selenium-webdriver');
+import { WebDriver, WebElement } from 'selenium-webdriver';
 import chrome from 'selenium-webdriver/chrome';
 import { red } from '../utils/terminalOutput';
 interface InfoGeocodificada {
@@ -7,7 +8,7 @@ interface InfoGeocodificada {
   longitud: string;
 }
 export const conseguirCoordenadasGPS = async function conseguirCoordenadasGPS(direccion : string) {
-     let driver = null; 
+     let driver: WebDriver | null = null;
     console.log(`[GPS] Buscando dirección: ${direccion}`);
     const chromeOptions = new chrome.Options();
   let InfoGeocodificada: InfoGeocodificada = {
@@ -30,6 +31,8 @@ chromeOptions.setChromeLogFile('NUL');
             .setChromeOptions(chromeOptions)
             .setChromeService(chromeService)
             .build();
+        if (!driver) throw new Error('No se pudo iniciar Selenium.');
+        const navegador = driver;
         await driver.manage().setTimeouts({ pageLoad: 20000, script: 10000, implicit: 5000 });
         await driver.get('https://www.coordenadas-gps.com/');
         try {
@@ -46,13 +49,37 @@ chromeOptions.setChromeLogFile('NUL');
         await driver.executeScript("arguments[0].scrollIntoView({block: 'center'});", inputDireccion);
         await inputDireccion.clear();
         await inputDireccion.sendKeys(direccion);
+        const palabrasDireccion = direccion
+            .toLocaleLowerCase('es-ES')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .split(/[^a-z0-9]+/)
+            .filter((palabra: string) => palabra.length >= 4 && !/^\d+$/.test(palabra))
+            .filter((palabra: string) => !['calle', 'avenida', 'carretera', 'españa'].includes(palabra));
+        const infoWindowsIniciales = await driver.findElements(By.id('info_window'));
+        const textoInicial = infoWindowsIniciales.length
+            ? await infoWindowsIniciales[0].getText()
+            : '';
         const btnObtener = await driver.findElement(By.css("button[onclick='codeAddress()']"));
         // El botón también puede quedar tapado por anuncios: se pulsa vía JavaScript.
         await driver.executeScript("arguments[0].click();", btnObtener);
         await driver.executeScript("window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });");
-        await driver.sleep(2000);
-
-const infoWindow = await driver.wait(until.elementLocated(By.id('info_window')), 10000);
+        const infoWindow = await driver.wait<WebElement>(async () => {
+            const infoWindows = await navegador.findElements(By.id('info_window'));
+            if (!infoWindows.length) return false;
+            const texto = await infoWindows[0].getText();
+            const textoNormalizado = texto
+                .toLocaleLowerCase('es-ES')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '');
+            const contieneDireccion = palabrasDireccion.some((palabra: string) =>
+                textoNormalizado.includes(palabra)
+            );
+            return texto && texto !== textoInicial && contieneDireccion &&
+                /Latitud:/i.test(texto) && /Longitud:/i.test(texto)
+                ? infoWindows[0]
+                : false;
+        }, 15000, `La web no devolvió un resultado válido para "${direccion}".`);
         const textoCompleto = await infoWindow.getText();
         const latMatch = textoCompleto.match(/Latitud:\s*([-\d.]+)/i);
         const lngMatch = textoCompleto.match(/Longitud:\s*([-\d.]+)/i);
@@ -72,7 +99,7 @@ const infoWindow = await driver.wait(until.elementLocated(By.id('info_window')),
         const message = error instanceof Error ? error.message : String(error);
         console.warn(red(`[GPS] No se pudieron obtener coordenadas para "${direccion}": ${message}`));
     }finally {
-    await driver.quit();
+    if (driver) await driver.quit();
    return { 
     latitud: InfoGeocodificada.latitud,
     longitud: InfoGeocodificada.longitud,

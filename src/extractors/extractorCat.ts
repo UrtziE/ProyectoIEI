@@ -254,7 +254,10 @@ const getCoordinates = async (record: PreparedCatRecord): Promise<Coordenadas | 
             `[CAT] Dirección adaptada para la búsqueda: "${record.direccion}" -> "${direccionNormalizada}"`
         ));
     }
-    const address = `${direccionNormalizada}, ${record.codigoPostal} ${record.municipio}, ${record.provincia}, España`;
+    const ubicacion = normalize(record.municipio) === normalize(record.provincia)
+        ? record.municipio
+        : `${record.municipio}, ${record.provincia}`;
+    const address = `${direccionNormalizada}, ${record.codigoPostal} ${ubicacion}, España`;
     try {
         const result = await conseguirCoordenadasGPS(address);
         const latitud = Number(result.latitud);
@@ -267,26 +270,6 @@ const getCoordinates = async (record: PreparedCatRecord): Promise<Coordenadas | 
     } catch {
         return undefined;
     }
-};
-
-const ensureProvincia = async (nombre: string, summary: ImportSummary): Promise<mongoose.Types.ObjectId> => {
-    const existing = await Provincia.findOne({ nombre }).exec();
-    if (existing) return existing._id;
-    const created = await Provincia.create({ nombre });
-    summary.provincias += 1;
-    return created._id;
-};
-
-const ensureLocalidad = async (
-    nombre: string,
-    provincia: mongoose.Types.ObjectId,
-    summary: ImportSummary
-): Promise<mongoose.Types.ObjectId> => {
-    const existing = await Localidad.findOne({ nombre, provincia }).exec();
-    if (existing) return existing._id;
-    const created = await Localidad.create({ nombre, provincia });
-    summary.localidades += 1;
-    return created._id;
 };
 
 /** Importa entidades válidas; cada registro falla de forma aislada. */
@@ -314,6 +297,8 @@ export const extractCAT = async (
     });
 
     for (const [index, record] of recordsConAmbito.entries()) {
+        let provinciaNueva: mongoose.Types.ObjectId | undefined;
+        let localidadNueva: mongoose.Types.ObjectId | undefined;
         try {
             console.log(`[CAT] Consultando ubicación ${index + 1}/${recordsConAmbito.length}: ${record.nombre}`);
             const provinciaExistente = await Provincia.findOne({ nombre: record.provincia }).exec();
@@ -327,9 +312,20 @@ export const extractCAT = async (
                 continue;
             }
 
-            const provinciaId = provinciaExistente?._id ?? await ensureProvincia(record.provincia, summary);
-            const localidadId = localidadExistente?._id ?? await ensureLocalidad(record.municipio, provinciaId, summary);
-            if (await Entidad.exists({ nombre: record.nombre, localidad: localidadId })) {
+            const provincia = provinciaExistente ?? await Provincia.create({ nombre: record.provincia });
+            if (!provinciaExistente) {
+                provinciaNueva = provincia._id;
+                summary.provincias += 1;
+            }
+            const localidad = localidadExistente ?? await Localidad.create({
+                nombre: record.municipio,
+                provincia: provincia._id
+            });
+            if (!localidadExistente) {
+                localidadNueva = localidad._id;
+                summary.localidades += 1;
+            }
+            if (await Entidad.exists({ nombre: record.nombre, localidad: localidad._id })) {
                 throw new Error('Entidad duplicada: ya existe en la base de datos.');
             }
             await Entidad.create({
@@ -339,7 +335,7 @@ export const extractCAT = async (
                 codigo_postal: record.codigoPostal,
                 latitud: coords.latitud,
                 longitud: coords.longitud,
-                localidad: localidadId,
+                localidad: localidad._id,
                 ...(record.url ? { URL: record.url } : {}),
                 ...(record.contacto ? { contacto: record.contacto } : {}),
                 ...(record.descripcion ? { descripcion: record.descripcion } : {})
@@ -347,6 +343,8 @@ export const extractCAT = async (
             summary.entidades += 1;
             console.log(green(`[CAT] Entidad insertada: "${record.nombre}"`));
         } catch (error: unknown) {
+            if (localidadNueva) await Localidad.deleteOne({ _id: localidadNueva }).exec();
+            if (provinciaNueva) await Provincia.deleteOne({ _id: provinciaNueva }).exec();
             const message = error instanceof Error ? error.message : String(error);
             summary.rechazados.push({ registro: record.nombre, motivo: `Error al guardar: ${message}` });
             console.warn(red(`[CAT] No se pudo insertar "${record.nombre}": ${message}`));

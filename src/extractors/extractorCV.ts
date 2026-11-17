@@ -109,6 +109,8 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
     const resultado: EntidadDocument[] = [];
 
     for (const registro of fuente) {
+      let provinciaNueva: mongoose.Types.ObjectId | undefined;
+      let localidadNueva: mongoose.Types.ObjectId | undefined;
       try {
         const ambito = MAPEO_AMBITO[normalizar(registro.sector)];
         if (!ambito) {
@@ -149,17 +151,19 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
         }
         const url = normalizarUrl(registro.web);
 
-        const provincia = await Provincia.findOneAndUpdate(
-            { nombre: registro.provincia },
-            { nombre: registro.provincia },
-            { upsert: true, new: true, runValidators: true }
-        )
+        const provinciaExistente = await Provincia.findOne({ nombre: registro.provincia }).exec();
+        const provincia = provinciaExistente ?? await Provincia.create({ nombre: registro.provincia });
+        if (!provinciaExistente) provinciaNueva = provincia._id;
 
-        const localidad = await Localidad.findOneAndUpdate(
-            { nombre: registro.municipio, provincia: provincia!._id },
-            { nombre: registro.municipio, provincia: provincia!._id },
-            { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
-        )
+        const localidadExistente = await Localidad.findOne({
+            nombre: registro.municipio,
+            provincia: provincia._id
+        }).exec();
+        const localidad = localidadExistente ?? await Localidad.create({
+            nombre: registro.municipio,
+            provincia: provincia._id
+        });
+        if (!localidadExistente) localidadNueva = localidad._id;
 
         if (await Entidad.exists({ nombre: registro.nombre, localidad: localidad!._id })) {
             throw new Error('Entidad duplicada: ya existe en la base de datos.');
@@ -179,6 +183,8 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
         resultado.push(entidad);
         console.log(green(`[extractorCV] Entidad insertada: "${registro.nombre}"`));
       } catch (error: unknown) {
+        if (localidadNueva) await Localidad.deleteOne({ _id: localidadNueva }).exec();
+        if (provinciaNueva) await Provincia.deleteOne({ _id: provinciaNueva }).exec();
         const message = error instanceof Error ? error.message : String(error);
         console.warn(red(`[extractorCV] Fila descartada: "${registro.nombre || 'sin nombre'}": ${message}`));
       }
