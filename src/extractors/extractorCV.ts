@@ -36,7 +36,7 @@ const MAPEO_AMBITO: Record<string, Ambito>= {
   'POBLACION EN GENERAL Y COLECTIVOS SOCIALMENTE DESFAVORECIDOS': 'INCLUSION_SOCIAL',
 }
 
-function normalizar(texto: string): string {
+function normalizarTexto(texto: string): string {
     return texto
         .trim()                          // por si el CSV arrastra espacios
         .toLocaleUpperCase('es-ES')      // mayúsculas (collate español)
@@ -44,11 +44,11 @@ function normalizar(texto: string): string {
         .replace(/[\u0300-\u036f]/g, ''); // elimina esas marcas → "Ó" queda como "O"
 }
 
-function construirDescripcion(registro: Record<string, string>){
+function construirDescripcion(registro: Record<string, string>): string {
     return registro.tipo_centro + "\n" + registro.clasificacion + "\n" + registro.leyenda;
 }
 
-function extraerTelefono(fuente: string): string[]{
+function extraerTelefonos(fuente: string): string[] {
     if (!fuente) return [];
     return fuente
         .split(/[-;]/)                 // separa por guión o punto y coma
@@ -56,24 +56,24 @@ function extraerTelefono(fuente: string): string[]{
         .filter(t => t.length >= 9);    // descarta los cortos
 }
 
-function construirContacto(registro: Record<string, string>){
-    const telefonos = extraerTelefono(registro.telefono);
+function construirContacto(registro: Record<string, string>): string {
+    const telefonos = extraerTelefonos(registro.telefono);
     const tel = telefonos.length ? telefonos.join(' - ') : 'N/A';
     const email = registro.email?.trim() || 'N/A';
     return `Tel: ${tel} - Email: ${email}`;
 }
 
 
-function nombreCastellano(nombre: string): string {
+function obtenerNombreCastellano(nombre: string): string {
     const partes = nombre.split('/');
     return partes[partes.length - 1].trim();
 }
 
 function construirUbicacionBusqueda(registro: Record<string, string>): string[] {
-    const municipio = nombreCastellano(registro.municipio);
-    const provincia = nombreCastellano(registro.provincia);
+    const municipio = obtenerNombreCastellano(registro.municipio);
+    const provincia = obtenerNombreCastellano(registro.provincia);
     const ubicacion = [municipio];
-    if (normalizar(municipio) !== normalizar(provincia)) ubicacion.push(provincia);
+    if (normalizarTexto(municipio) !== normalizarTexto(provincia)) ubicacion.push(provincia);
     ubicacion.push('España');
     return ubicacion;
 }
@@ -96,7 +96,7 @@ interface Incidencia {
     motivo: string;
 }
 
-const printRechazados = (rechazados: Incidencia[]): void => {
+const imprimirRechazos = (rechazados: Incidencia[]): void => {
     rechazados.slice(0, 20).forEach(({ registro, motivo }) => {
         console.log(red(`[extractorCV] Rechazado - ${registro}: ${motivo}`));
     });
@@ -106,7 +106,7 @@ const printRechazados = (rechazados: Incidencia[]): void => {
 };
 
 
-async function geocodificar(direccion: string): Promise<Geocodificacion | null> {
+async function obtenerGeocodificacion(direccion: string): Promise<Geocodificacion | null> {
     const coords = await conseguirCoordenadasGPS(direccion);
     const latitud = coords.latitud ? parseFloat(coords.latitud) : NaN;
     const longitud = coords.longitud ? parseFloat(coords.longitud) : NaN;
@@ -117,7 +117,7 @@ async function geocodificar(direccion: string): Promise<Geocodificacion | null> 
     return null;
 }
 
-export async function extraer(fuente: Record<string,string>[]): Promise<EntidadDocument[]>{
+export async function extraer(fuente: Record<string, string>[]): Promise<EntidadDocument[]> {
     const resultado: EntidadDocument[] = [];
     const rechazados: Incidencia[] = [];
     const registrarRechazo = (registro: string, motivo: string): void => {
@@ -129,7 +129,7 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
       let provinciaNueva: mongoose.Types.ObjectId | undefined;
       let localidadNueva: mongoose.Types.ObjectId | undefined;
       try {
-        const ambito = MAPEO_AMBITO[normalizar(registro.sector)];
+        const ambito = MAPEO_AMBITO[normalizarTexto(registro.sector)];
         if (!ambito) {
             registrarRechazo(
                 registro.nombre || 'sin nombre',
@@ -149,7 +149,7 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
                 `"${direccionOriginal}" -> "${direccionBusqueda}"`
             ));
         }
-        const geo = await geocodificar(direccionBusqueda);
+        const geo = await obtenerGeocodificacion(direccionBusqueda);
         if (!geo) {
             registrarRechazo(
                 registro.nombre || 'sin nombre',
@@ -217,7 +217,7 @@ export async function extraer(fuente: Record<string,string>[]): Promise<EntidadD
         `[extractorCV] Resumen: ${resultado.length} entidades insertadas, ` +
         `${rechazados.length} rechazadas.`
     );
-    printRechazados(rechazados);
+    imprimirRechazos(rechazados);
     return resultado;
 }
 

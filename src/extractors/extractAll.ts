@@ -23,7 +23,7 @@ const run = async (): Promise<void> => {
         `${canSummary.rechazados.length} rechazados.`
     );
 
-    const catSummary = await extractCAT(undefined, { clearDatabase: false });
+    const catSummary = await extractCAT();
     console.log(
         `[ALL] CAT completado: ${catSummary.entidades} entidades, ` +
         `${catSummary.rechazados.length} rechazados y ${catSummary.duplicados.length} duplicados.`

@@ -10,10 +10,10 @@ import { green, orange, red } from '../utils/terminalOutput';
 import { normalizarUrl } from '../utils/normalizarUrl';
 import { normalizarDireccion } from '../utils/normalizarDireccion';
 import {conseguirCoordenadasGPS} from '../robot/seleniumScraper'
-const UNKNOWN_VALUE = '_U';
+const VALOR_DESCONOCIDO = '_U';
 const DEFAULT_CAN_FILE = path.resolve(process.cwd(), 'src/public/fuentes_de_datos/datos-abiertos-csv-segundo-trimestre26.json');
 
-interface CanRecord {
+interface RegistroCan {
     denominacion?: string;
     numero_registro?: string;
     direccion_tipo_via?: string;
@@ -30,18 +30,18 @@ interface CanRecord {
     direccion_municipio_nombre?: string;
 }
 
-interface ImportSummary {
+interface ResumenImportacion {
     provincias: number;
     localidades: number;
     entidades: number;
     rechazados: Array<{ registro: string; motivo: string }>;
 }
 
-interface ExtractOptions {
+interface OpcionesExtraccion {
     clearDatabase?: boolean;
 }
 
-const printRechazados = (rechazados: ImportSummary['rechazados']): void => {
+const imprimirRechazos = (rechazados: ResumenImportacion['rechazados']): void => {
     rechazados.slice(0, 20).forEach(({ registro, motivo }) => {
         console.log(red(`[CAN] Rechazado - ${registro}: ${motivo}`));
     });
@@ -50,23 +50,24 @@ const printRechazados = (rechazados: ImportSummary['rechazados']): void => {
     }
 };
 
-const asRequiredString = (
+const obtenerTextoObligatorio = (
     value: string | undefined,
     field: string,
     index: number,
-    allowUnknownDescription = false
+    permitirDescripcionDesconocida = false
 ): string => {
     const trimmedValue = value?.trim();
     const isUnknownDescription = trimmedValue ? /^desconocid/i.test(trimmedValue) : false;
-    if (!trimmedValue || trimmedValue === UNKNOWN_VALUE || (isUnknownDescription && !allowUnknownDescription)) {
+    if (!trimmedValue || trimmedValue === VALOR_DESCONOCIDO ||
+        (isUnknownDescription && !permitirDescripcionDesconocida)) {
         throw new Error(`Falta un valor válido para el campo "${field}" en el registro ${index + 1}.`);
     }
 
     return trimmedValue;
 };
 
-const optionalCopiedValue = (value: string | undefined): string | undefined => {
-    if (!value || value === UNKNOWN_VALUE || value.trim() === '') {
+const copiarTextoOpcional = (value: string | undefined): string | undefined => {
+    if (!value || value === VALOR_DESCONOCIDO || value.trim() === '') {
         return undefined;
     }
 
@@ -120,7 +121,7 @@ const REGLAS_AMBITO: ReglaAmbito[] = [
     { area: 'Varios', ambito: 'VOLUNTARIADO_Y_PARTICIPACION_COMUNITARIA' }
 ];
 
-const getAmbito = (area: string, subarea: string | undefined): Ambito => {
+const obtenerAmbito = (area: string, subarea: string | undefined): Ambito => {
     const areaNormalizada = normalizarCategoria(area);
     const subareaNormalizada = normalizarCategoria(subarea);
     const regla = REGLAS_AMBITO.find(({ area: areaEsperada, subarea: subareaEsperada }) =>
@@ -130,16 +131,15 @@ const getAmbito = (area: string, subarea: string | undefined): Ambito => {
 
     if (regla) return regla.ambito;
 
-    throw new Error(`No existe un mapping de ambito para area "${area}" y subarea "${subarea ?? UNKNOWN_VALUE}".`);
+    throw new Error(`No existe un mapping de ambito para area "${area}" y subarea "${subarea ?? VALOR_DESCONOCIDO}".`);
 };
 
-const getDireccion = (record: CanRecord, provincia: string, municipio: string): string => {
+const construirDireccion = (registro: RegistroCan, provincia: string, municipio: string): string => {
     const via = [
-        record.direccion_tipo_via,
-        record.direccion_nombre_via,
-        record.direccion_numero
-    ]
-        .map(optionalCopiedValue)
+        registro.direccion_tipo_via,
+        registro.direccion_nombre_via,
+        registro.direccion_numero
+    ].map(copiarTextoOpcional)
         .filter((value): value is string => value !== undefined)
         .join(' ');
     const viaNormalizada = normalizarDireccion(via);
@@ -155,23 +155,23 @@ const getDireccion = (record: CanRecord, provincia: string, municipio: string): 
     return [viaNormalizada, ubicacion].filter((value) => value !== '').join(', ');
 };
 
-const getContactOrDescription = (parte1: string | undefined, parte2: string |undefined): string => {
-    const parte1Value = optionalCopiedValue(parte1);
-    const parte2Value = optionalCopiedValue(parte2);
-    if (parte1Value && parte2Value) {
-        return parte1Value + ' / ' + parte2Value;
+const construirTextoCompuesto = (parte1: string | undefined, parte2: string | undefined): string => {
+    const primerValor = copiarTextoOpcional(parte1);
+    const segundoValor = copiarTextoOpcional(parte2);
+    if (primerValor && segundoValor) {
+        return primerValor + ' / ' + segundoValor;
     }  
-    if (parte1Value) {
-        return parte1Value;
+    if (primerValor) {
+        return primerValor;
     }
-    if (parte2Value) {
-        return parte2Value;
+    if (segundoValor) {
+        return segundoValor;
     }
     return 'No disponible';
 };
 
 
-const readCanFile = async (filePath: string): Promise<CanRecord[]> => {
+const leerFicheroCan = async (filePath: string): Promise<RegistroCan[]> => {
     const content = await fs.readFile(filePath, 'utf8');
     const parsed: unknown = JSON.parse(content);
 
@@ -179,17 +179,130 @@ const readCanFile = async (filePath: string): Promise<CanRecord[]> => {
         throw new Error(`El fichero ${filePath} debe contener un array JSON.`);
     }
 
-    return parsed as CanRecord[];
+    return parsed as RegistroCan[];
+};
+
+interface DatosCanPreparados {
+    nombre: string;
+    ambito: Ambito;
+    direccion: string;
+    codigoPostal: string;
+    latitud: number;
+    longitud: number;
+    descripcion: string;
+    contacto: string;
+    provincia: string;
+    municipio: string;
+    url?: string;
+}
+
+const prepararRegistroCan = async (
+    registro: RegistroCan,
+    indice: number
+): Promise<DatosCanPreparados> => {
+    const nombre = obtenerTextoObligatorio(registro.denominacion, 'denominacion', indice);
+    const provincia = obtenerTextoObligatorio(
+        registro.direccion_provincia_nombre,
+        'direccion_provincia_nombre',
+        indice,
+        true
+    );
+    const municipio = obtenerTextoObligatorio(
+        registro.direccion_municipio_nombre,
+        'direccion_municipio_nombre',
+        indice
+    );
+    const area = obtenerTextoObligatorio(registro.area_nombre, 'area_nombre', indice);
+    const ambito = obtenerAmbito(area, copiarTextoOpcional(registro.subarea_nombre));
+    const direccion = construirDireccion(registro, provincia, municipio);
+    const coordenadas = await conseguirCoordenadasGPS(direccion);
+    const codigoPostal = coordenadas.codigo_postal?.trim() ?? '';
+
+    if (!/^\d{5}$/.test(codigoPostal) ||
+        (!codigoPostal.startsWith('35') && !codigoPostal.startsWith('38'))) {
+        throw new Error(`Código postal inválido o fuera de Canarias: "${codigoPostal}"`);
+    }
+
+    const longitud = coordenadas.longitud ? Number(coordenadas.longitud) : undefined;
+    const latitud = coordenadas.latitud ? Number(coordenadas.latitud) : undefined;
+    if (longitud === undefined || latitud === undefined ||
+        !Number.isFinite(longitud) || !Number.isFinite(latitud)) {
+        throw new Error('No se obtuvieron coordenadas válidas');
+    }
+
+    return {
+        nombre,
+        ambito,
+        direccion,
+        codigoPostal,
+        longitud,
+        latitud,
+        descripcion: construirTextoCompuesto(registro.subarea_nombre, registro.area_nombre),
+        contacto: construirTextoCompuesto(registro.telefono_1, registro.telefono_2),
+        provincia,
+        municipio,
+        url: normalizarUrl(registro.pagina_web)
+    };
+};
+
+const guardarRegistroCan = async (
+    datos: DatosCanPreparados
+): Promise<{ provinciaNueva: boolean; localidadNueva: boolean }> => {
+    let idProvinciaNueva: mongoose.Types.ObjectId | undefined;
+    let idLocalidadNueva: mongoose.Types.ObjectId | undefined;
+
+    try {
+        const provinciaExistente = await Provincia.findOne({ nombre: datos.provincia }).exec();
+        const provincia = provinciaExistente ??
+            await Provincia.create({ nombre: datos.provincia });
+        if (!provinciaExistente) idProvinciaNueva = provincia._id;
+
+        const localidadExistente = await Localidad.findOne({
+            nombre: datos.municipio,
+            provincia: provincia._id
+        }).exec();
+        const localidad = localidadExistente ?? await Localidad.create({
+            nombre: datos.municipio,
+            provincia: provincia._id
+        });
+        if (!localidadExistente) idLocalidadNueva = localidad._id;
+
+        if (await Entidad.exists({ nombre: datos.nombre, localidad: localidad._id })) {
+            throw new Error('Entidad duplicada: ya existe en la base de datos.');
+        }
+
+        await Entidad.create({
+            nombre: datos.nombre,
+            ambito: datos.ambito,
+            direccion: datos.direccion,
+            codigo_postal: datos.codigoPostal,
+            longitud: datos.longitud,
+            latitud: datos.latitud,
+            descripcion: datos.descripcion,
+            contacto: datos.contacto,
+            localidad: localidad._id,
+            ...(datos.url ? { URL: datos.url } : {})
+        });
+
+        return {
+            provinciaNueva: !provinciaExistente,
+            localidadNueva: !localidadExistente
+        };
+    } catch (error: unknown) {
+        if (idLocalidadNueva) await Localidad.deleteOne({ _id: idLocalidadNueva }).exec();
+        if (idProvinciaNueva) await Provincia.deleteOne({ _id: idProvinciaNueva }).exec();
+        throw error;
+    }
 };
 
 export const extractCAN = async (
     filePath = DEFAULT_CAN_FILE,
-    options: ExtractOptions = {}
-): Promise<ImportSummary> => {
-    const records = await readCanFile(filePath);
+    options: OpcionesExtraccion = {}
+): Promise<ResumenImportacion> => {
+    const records = await leerFicheroCan(filePath);
     if (options.clearDatabase === true) await vaciarBaseDatos();
 
-    const summary: ImportSummary = {
+    const summary: ResumenImportacion = {
         provincias: 0,
         localidades: 0,
         entidades: 0,
@@ -197,72 +310,14 @@ export const extractCAN = async (
     };
 
     for (const [index, record] of records.entries()) {
-        let provinciaNueva: mongoose.Types.ObjectId | undefined;
-        let localidadNueva: mongoose.Types.ObjectId | undefined;
         try {
-        const nombre = asRequiredString(record.denominacion, 'denominacion', index);
-        const provinciaNombre = asRequiredString(
-            record.direccion_provincia_nombre,
-            'direccion_provincia_nombre',
-            index,
-            true
-        );
-        const localidadNombre = asRequiredString(record.direccion_municipio_nombre, 'direccion_municipio_nombre', index);
-        const area = asRequiredString(record.area_nombre, 'area_nombre', index);
-        const ambito = getAmbito(area, optionalCopiedValue(record.subarea_nombre));
-        const url = normalizarUrl(record.pagina_web);
-        const direccion = getDireccion(record, provinciaNombre, localidadNombre);
-        const descripcion = getContactOrDescription(record.subarea_nombre, record.area_nombre);
-        const contacto= getContactOrDescription(record.telefono_1, record.telefono_2);
-        const coordenadas = await conseguirCoordenadasGPS(direccion);
-        const codigoPostal = coordenadas.codigo_postal?.trim() ?? '';
-
-        if (!/^\d{5}$/.test(codigoPostal) || (!codigoPostal.startsWith('35') && !codigoPostal.startsWith('38'))) {
-            throw new Error(`Código postal inválido o fuera de Canarias: "${codigoPostal}"`);
-        }
-
-        const longitud = coordenadas.longitud ? parseFloat(coordenadas.longitud) : undefined;
-        const latitud = coordenadas.latitud ? parseFloat(coordenadas.latitud) : undefined;
-        if (longitud === undefined || latitud === undefined || !Number.isFinite(longitud) || !Number.isFinite(latitud)) {
-            throw new Error('No se obtuvieron coordenadas válidas');
-        }
-        const provinciaExistente = await Provincia.findOne({ nombre: provinciaNombre }).exec();
-        const provincia = provinciaExistente ?? await Provincia.create({ nombre: provinciaNombre });
-        if (!provinciaExistente) provinciaNueva = provincia._id;
-        if (!provinciaExistente) summary.provincias += 1;
-
-        const localidadExistente = await Localidad.findOne(
-            { nombre: localidadNombre, provincia: provincia._id },
-        ).exec();
-        const localidad = localidadExistente ?? await Localidad.create({
-            nombre: localidadNombre,
-            provincia: provincia._id
-        });
-        if (!localidadExistente) localidadNueva = localidad._id;
-        if (!localidadExistente) summary.localidades += 1;
-
-        const entidadData = {
-            nombre,
-            ambito,
-            direccion,
-            codigo_postal: codigoPostal,
-            longitud,
-            latitud,
-            descripcion,
-            contacto,
-            localidad: localidad._id,
-            ...(url ? { URL: url } : {})
-        };
-
-        if (await Entidad.exists({ nombre, localidad: localidad._id })) {
-            throw new Error('Entidad duplicada: ya existe en la base de datos.');
-        }
-        await Entidad.create(entidadData);
+        const datos = await prepararRegistroCan(record, index);
+        const resultado = await guardarRegistroCan(datos);
+        if (resultado.provinciaNueva) summary.provincias += 1;
+        if (resultado.localidadNueva) summary.localidades += 1;
         summary.entidades += 1;
-        console.log(green(`[CAN] Entidad insertada: "${nombre}"`));
+        console.log(green(`[CAN] Entidad insertada: "${datos.nombre}"`));
         } catch (error: unknown) {
-            if (localidadNueva) await Localidad.deleteOne({ _id: localidadNueva }).exec();
-            if (provinciaNueva) await Provincia.deleteOne({ _id: provinciaNueva }).exec();
             const message = error instanceof Error ? error.message : String(error);
             const registro = record.denominacion?.trim() || `registro ${index + 1} (sin denominación)`;
             summary.rechazados.push({ registro, motivo: message });
@@ -275,7 +330,7 @@ export const extractCAN = async (
         `${summary.rechazados.length} rechazados, ${summary.provincias} provincias nuevas y ` +
         `${summary.localidades} localidades nuevas.`
     );
-    printRechazados(summary.rechazados);
+    imprimirRechazos(summary.rechazados);
     return summary;
 };
 
