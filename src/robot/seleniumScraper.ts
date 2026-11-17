@@ -46,6 +46,8 @@ chromeOptions.setChromeLogFile('NUL');
         await driver.sleep(6000);
         const inputDireccion = await driver.findElement(By.id('address'));
         await inputDireccion.clear();
+        await driver.sleep(1000);
+        await inputDireccion.clear();
         await inputDireccion.sendKeys(direccion);
         const btnObtener = await driver.findElement(By.css("button[onclick='codeAddress()']"));
         await driver.executeScript("arguments[0].click();", btnObtener);
