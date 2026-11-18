@@ -105,3 +105,78 @@ export const conseguirCoordenadasGPS = async (direccion: string) => {
 
     return resultadoConCoordenadas;
 };
+
+/** Obtiene el código postal inversamente a partir de coordenadas WGS84. */
+const buscarCodigoPostalPorCoordenadas = async (latitud: number, longitud: number): Promise<string> => {
+    let driver: WebDriver | null = null;
+    const chromeOptions = new chrome.Options();
+    chromeOptions.addArguments(
+        '--deny-permission-prompts', '--disable-logging', '--log-level=3', '--remote-debugging-pipe'
+    );
+    chromeOptions.setChromeLogFile('NUL');
+
+    try {
+        const chromeService = new chrome.ServiceBuilder().setStdio('ignore');
+        driver = await new Builder()
+            .forBrowser(Browser.CHROME)
+            .setChromeOptions(chromeOptions)
+            .setChromeService(chromeService)
+            .build();
+        if (!driver) throw new Error('No se pudo iniciar Selenium.');
+        await driver.manage().window().maximize();
+        await driver.manage().setTimeouts({ pageLoad: 20000, script: 10000, implicit: 5000 });
+        await driver.get('https://www.coordenadas-gps.com/');
+        try {
+            const btnCookies = await driver.wait(until.elementLocated(By.css('.fc-cta-consent')), 5000);
+            if (await btnCookies.isDisplayed()) await btnCookies.click();
+        } catch (_error) {
+            // El aviso de cookies puede no aparecer.
+        }
+        await driver.sleep(6000);
+
+        const inputLatitud = await driver.findElement(By.id('latitude'));
+        const inputLongitud = await driver.findElement(By.id('longitude'));
+        await inputLatitud.clear();
+        await inputLatitud.sendKeys(String(123));
+        await driver.sleep(1000);
+        await inputLatitud.clear();
+        await inputLatitud.sendKeys(String(latitud));
+        await driver.sleep(1000);
+
+        await inputLongitud.clear();
+                await driver.sleep(1000);
+
+        await inputLongitud.sendKeys(String(longitud));
+
+        const botonDireccion = await driver.findElement(
+            By.xpath("//button[contains(normalize-space(.), 'Obtener Dirección')]")
+        );
+        await driver.executeScript('arguments[0].click();', botonDireccion);
+        await driver.sleep(2000);
+        const infoWindow = await driver.wait(until.elementLocated(By.id('info_window')), 11000);
+        await driver.wait(async () => (await infoWindow.getText()).trim().length > 0, 11000);
+        const texto = await infoWindow.getText();
+        const lineaDireccion = texto.split(/Latitud:/i)[0];
+        const match = lineaDireccion.match(/\b\d{5}\b/);
+        const codigoPostal = match?.[0] ?? '';
+        console.log(`[GPS] Coordenadas lat=${latitud} lon=${longitud} | CP=${codigoPostal || 'N/D'}`);
+        return codigoPostal;
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(red(`[GPS] No se pudo obtener el código postal para lat=${latitud}, lon=${longitud}: ${message}`));
+        return '';
+    } finally {
+        if (driver) await driver.quit();
+    }
+};
+
+export const conseguirCodigoPostalPorCoordenadas = async (latitud: number, longitud: number): Promise<string> => {
+    for (let intento = 1; intento <= 2; intento += 1) {
+        const codigoPostal = await buscarCodigoPostalPorCoordenadas(latitud, longitud);
+        if (codigoPostal) return codigoPostal;
+        if (intento < 2) {
+            console.warn(orange(`[GPS] Reintentando búsqueda inversa (${intento + 1}/2): lat=${latitud}, lon=${longitud}`));
+        }
+    }
+    return '';
+};

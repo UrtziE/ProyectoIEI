@@ -8,9 +8,8 @@ import Entidad from '../models/Entidad';
 import mongoose from 'mongoose';
 import proj4 from 'proj4';
 import connectDB from '../config/database';
-import { conseguirCoordenadasGPS } from '../robot/seleniumScraper';
+import { conseguirCodigoPostalPorCoordenadas } from '../robot/seleniumScraper';
 import { green, red } from '../utils/terminalOutput';
-import { normalizarDireccion } from '../utils/normalizarDireccion';
 import { normalizarUrl } from '../utils/normalizarUrl';
 
 
@@ -67,27 +66,6 @@ function construirContacto(registro: Record<string, string>): string {
     return `Tel: ${tel} - Email: ${email}`;
 }
 
-
-function obtenerNombreCastellano(nombre: string): string {
-    const partes = nombre.split('/');
-    return partes[partes.length - 1].trim();
-}
-
-function construirUbicacionBusqueda(registro: Record<string, string>): string[] {
-    const municipio = obtenerNombreCastellano(registro.municipio);
-    const provincia = obtenerNombreCastellano(registro.provincia);
-    const ubicacion = [municipio];
-    if (normalizarTexto(municipio) !== normalizarTexto(provincia)) ubicacion.push(provincia);
-    ubicacion.push('España');
-    return ubicacion;
-}
-
-function construirDireccionBusqueda(registro: Record<string, string>): string {
-    return [
-        normalizarDireccion(registro.domici),
-        ...construirUbicacionBusqueda(registro)
-    ].filter(Boolean).join(', ');
-}
 
 interface Coordenadas {
     latitud: number;
@@ -155,8 +133,10 @@ export async function extraer(fuente: Record<string, string>[]): Promise<Entidad
             );
             continue;
         }
-        const direccionBusqueda = construirDireccionBusqueda(registro);
-        const codigoPostalRegistro = (await conseguirCoordenadasGPS(direccionBusqueda)).codigo_postal?.trim() ?? '';
+        const codigoPostalRegistro = await conseguirCodigoPostalPorCoordenadas(
+            coordenadas.latitud,
+            coordenadas.longitud
+        );
         if (!/^\d{5}$/.test(codigoPostalRegistro) ||
             !PREFIJOS_CP_CV.some((prefijo) => codigoPostalRegistro.startsWith(prefijo))) {
             registrarRechazo(
