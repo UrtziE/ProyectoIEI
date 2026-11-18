@@ -6,14 +6,18 @@ import Localidad from '../models/Localidad';
 import Entidad from '../models/Entidad';
 
 import mongoose from 'mongoose';
+import proj4 from 'proj4';
 import connectDB from '../config/database';
 import { conseguirCoordenadasGPS } from '../robot/seleniumScraper';
-import { green, orange, red } from '../utils/terminalOutput';
+import { green, red } from '../utils/terminalOutput';
 import { normalizarDireccion } from '../utils/normalizarDireccion';
 import { normalizarUrl } from '../utils/normalizarUrl';
 
 
 const PREFIJOS_CP_CV = ['03', '12', '46'];
+const UTM_CV = 'EPSG:25830';
+const WGS84 = 'EPSG:4326';
+proj4.defs(UTM_CV, '+proj=utm +zone=30 +ellps=GRS80 +units=m +no_defs +type=crs');
 
 const ruta = path.resolve(process.cwd(), 'src', 'public', 'fuentes_de_datos', 'entidades_CV.csv');
 
@@ -85,8 +89,7 @@ function construirDireccionBusqueda(registro: Record<string, string>): string {
     ].filter(Boolean).join(', ');
 }
 
-interface Geocodificacion {
-    codigoPostal: string;
+interface Coordenadas {
     latitud: number;
     longitud: number;
 }
@@ -106,15 +109,21 @@ const imprimirRechazos = (rechazados: Incidencia[]): void => {
 };
 
 
-async function obtenerGeocodificacion(direccion: string): Promise<Geocodificacion | null> {
-    const coords = await conseguirCoordenadasGPS(direccion);
-    const latitud = coords.latitud ? parseFloat(coords.latitud) : NaN;
-    const longitud = coords.longitud ? parseFloat(coords.longitud) : NaN;
-    const codigoPostal = coords.codigo_postal?.trim() ?? '';
-    if (!Number.isNaN(latitud) && !Number.isNaN(longitud)) {
-        return { codigoPostal, latitud, longitud };
-    }
-    return null;
+function convertirCoordenadasCSV(registro: Record<string, string>): Coordenadas | null {
+    const parsear = (valor: string | undefined): number => {
+        if (!valor?.trim()) return NaN;
+        // El CSV contiene algún valor numérico con coma decimal (por ejemplo "4333847,00").
+        const normalizado = valor.trim().replace(',', '.');
+        return /^[-+]?\d+(\.\d+)?$/.test(normalizado) ? Number(normalizado) : NaN;
+    };
+    const x = parsear(registro.x_25830);
+    const y = parsear(registro.y_25830);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+    const [longitud, latitud] = proj4(UTM_CV, WGS84, [x, y]);
+    if (!Number.isFinite(latitud) || !Number.isFinite(longitud) ||
+        latitud < -90 || latitud > 90 || longitud < -180 || longitud > 180) return null;
+    return { latitud, longitud };
 }
 
 export async function extraer(fuente: Record<string, string>[]): Promise<EntidadDocument[]> {
@@ -138,37 +147,21 @@ export async function extraer(fuente: Record<string, string>[]): Promise<Entidad
             continue; // sector desconocido: se descarta
         }
 
+        const coordenadas = convertirCoordenadasCSV(registro);
+        if (!coordenadas) {
+            registrarRechazo(
+                registro.nombre || 'sin nombre',
+                'Falta una coordenada UTM (x_25830 o y_25830) o no es válida'
+            );
+            continue;
+        }
         const direccionBusqueda = construirDireccionBusqueda(registro);
-        const direccionOriginal = [
-            registro.domici,
-            ...construirUbicacionBusqueda(registro)
-        ].filter(Boolean).join(', ');
-        if (direccionBusqueda !== direccionOriginal) {
-            console.log(orange(
-                `[extractorCV] Dirección adaptada para la búsqueda: ` +
-                `"${direccionOriginal}" -> "${direccionBusqueda}"`
-            ));
-        }
-        const geo = await obtenerGeocodificacion(direccionBusqueda);
-        if (!geo) {
+        const codigoPostalRegistro = (await conseguirCoordenadasGPS(direccionBusqueda)).codigo_postal?.trim() ?? '';
+        if (!/^\d{5}$/.test(codigoPostalRegistro) ||
+            !PREFIJOS_CP_CV.some((prefijo) => codigoPostalRegistro.startsWith(prefijo))) {
             registrarRechazo(
                 registro.nombre || 'sin nombre',
-                `Sin coordenadas (${direccionBusqueda})`
-            );
-            continue;
-        }
-        if (!geo.codigoPostal) {
-            registrarRechazo(
-                registro.nombre || 'sin nombre',
-                `Sin código postal (${direccionBusqueda})`
-            );
-            continue;
-        }
-        if (!/^\d{5}$/.test(geo.codigoPostal) ||
-            !PREFIJOS_CP_CV.some((prefijo) => geo.codigoPostal.startsWith(prefijo))) {
-            registrarRechazo(
-                registro.nombre || 'sin nombre',
-                `Código postal inválido o fuera de la Comunitat Valenciana: "${geo.codigoPostal}"`
+                `Código postal inválido o fuera de la Comunitat Valenciana: "${codigoPostalRegistro}"`
             );
             continue;
         }
@@ -195,9 +188,9 @@ export async function extraer(fuente: Record<string, string>[]): Promise<Entidad
             nombre: registro.nombre,
             ambito,
             direccion: registro.domici,
-            codigo_postal: geo.codigoPostal,
-            latitud: geo.latitud,
-            longitud: geo.longitud,
+            codigo_postal: codigoPostalRegistro,
+            latitud: coordenadas.latitud,
+            longitud: coordenadas.longitud,
             descripcion: construirDescripcion(registro),
             contacto: construirContacto(registro),
             ...(url ? { URL: url } : {}),
