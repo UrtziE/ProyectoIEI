@@ -52,6 +52,7 @@ interface RegistroCatPreparado {
     provincia: string;
     municipio: string;
     codigoPostal: string;
+    codigoPostalOriginal: string;
     direccion: string;
     url?: string;
     contacto?: string;
@@ -97,6 +98,12 @@ const normalizarClave = (value: string): string => value
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '');
+
+const municipioUsadoEnBusqueda = (municipio: string): string => {
+    const tieneArticuloFinal = /\s*\(l'\)\s*$/i.test(municipio);
+    const municipioBase = municipio.replace(/\s*\(l'\)\s*$/i, '');
+    return normalizarDireccion(tieneArticuloFinal ? `l'${municipioBase}` : municipio);
+};
 
 /** Lee el XML y adapta los campos catalanes al formato interno del extractor. */
 export const leerRegistrosCat = async (filePath = DEFAULT_CAT_FILE): Promise<RegistroCat[]> => {
@@ -212,10 +219,30 @@ const prepararRegistros = (records: RegistroCat[], summary: ResumenImportacionCa
         if (!direccion) return reject('Sin dirección (obligatoria en el esquema global)');
 
         const postal = normalizarCodigoPostal(record.codigoPostal);
-        if (!postal.cp) return reject(postal.error ?? 'Código postal inválido');
         const originalCP = obtenerValorOpcional(record.codigoPostal) ?? '';
-        if (postal.cp !== originalCP.replace(/\D/g, '')) {
-            summary.reparados.push({ registro: label, motivo: `Código postal "${originalCP}" corregido a "${postal.cp}"` });
+        let codigoPostal = postal.cp ?? '';
+        const provinciaMunicipio = Object.values(PROVINCIA_POR_PREFIJO_POSTAL)
+            .find((provincia) => normalizarClave(provincia) === normalizarClave(municipio));
+        const provinciaCodigoPostal = codigoPostal
+            ? PROVINCIA_POR_PREFIJO_POSTAL[codigoPostal.slice(0, 2)]
+            : undefined;
+
+        if (codigoPostal && provinciaMunicipio && provinciaCodigoPostal !== provinciaMunicipio) {
+            console.warn(red(
+                `[CAT] El código postal ${codigoPostal} no pertenece al municipio ${municipio}; se buscará el CP con las coordenadas GPS.`
+            ));
+            summary.reparados.push({
+                registro: label,
+                motivo: `El CP ${codigoPostal} no corresponde al municipio ${municipio}; se buscará otro con GPS`
+            });
+            codigoPostal = '';
+        }
+        if (originalCP && !postal.cp) {
+            console.warn(red(
+                `[CAT] El código postal "${originalCP}" no coincide con el municipio "${municipio}" o no es válido para Cataluña; se buscará el CP con las coordenadas GPS.`
+            ));
+        } else if (postal.cp && postal.cp !== originalCP.replace(/\D/g, '')) {
+            summary.reparados.push({ registro: label, motivo: `Código postal "${originalCP}" normalizado a "${postal.cp}"` });
         }
 
         const registration = obtenerValorOpcional(record.numeroRegistro);
@@ -232,8 +259,9 @@ const prepararRegistros = (records: RegistroCat[], summary: ResumenImportacionCa
         prepared.push({
             nombre,
             municipio,
-            provincia: PROVINCIA_POR_PREFIJO_POSTAL[postal.cp.slice(0, 2)],
-            codigoPostal: postal.cp,
+            provincia: codigoPostal ? PROVINCIA_POR_PREFIJO_POSTAL[codigoPostal.slice(0, 2)] : '',
+            codigoPostal,
+            codigoPostalOriginal: originalCP,
             direccion,
             url: normalizarUrl(record.web),
             contacto: construirContacto(record),
@@ -247,6 +275,7 @@ const prepararRegistros = (records: RegistroCat[], summary: ResumenImportacionCa
 interface Coordenadas {
     latitud: number;
     longitud: number;
+    codigoPostal?: string;
 }
 
 const obtenerCoordenadas = async (record: RegistroCatPreparado): Promise<Coordenadas | undefined> => {
@@ -256,12 +285,9 @@ const obtenerCoordenadas = async (record: RegistroCatPreparado): Promise<Coorden
             `[CAT] Dirección adaptada para la búsqueda: "${record.direccion}" -> "${direccionNormalizada}"`
         ));
     }
-    const municipioNormalizado = normalizarDireccion(record.municipio);
-    const provinciaNormalizada = normalizarDireccion(record.provincia);
-    const ubicacion = normalizarClave(municipioNormalizado) === normalizarClave(provinciaNormalizada)
-        ? municipioNormalizado
-        : `${municipioNormalizado}, ${provinciaNormalizada}`;
-    const address = `${direccionNormalizada}, ${record.codigoPostal} ${ubicacion}, España`;
+    const municipioNormalizado = municipioUsadoEnBusqueda(record.municipio);
+    const postal = record.codigoPostal ? `${record.codigoPostal} ` : '';
+    const address = `${direccionNormalizada}, ${postal}${municipioNormalizado}, España`;
     try {
         const result = await conseguirCoordenadasGPS(address);
         const latitud = Number(result.latitud);
@@ -270,7 +296,12 @@ const obtenerCoordenadas = async (record: RegistroCatPreparado): Promise<Coorden
             return undefined;
         }
         if (latitud < -90 || latitud > 90 || longitud < -180 || longitud > 180) return undefined;
-        return { latitud, longitud };
+        const codigoPostalGPS = normalizarCodigoPostal(result.codigo_postal).cp;
+        return {
+            latitud,
+            longitud,
+            ...(codigoPostalGPS ? { codigoPostal: codigoPostalGPS } : {})
+        };
     } catch {
         return undefined;
     }
@@ -282,7 +313,7 @@ interface ResultadoGuardadoCat {
 }
 
 const guardarEntidadCat = async (
-    record: RegistroCatPreparado & { ambito: Ambito },
+    record: RegistroCatPreparado & { ambito: Ambito; codigoPostal: string; provincia: string },
     coordenadas: Coordenadas
 ): Promise<ResultadoGuardadoCat> => {
     let idProvinciaNueva: mongoose.Types.ObjectId | undefined;
@@ -364,7 +395,6 @@ export const extractCAT = async (
     const summary = crearResumen();
     // Fases 1 y 2: leer el XML y convertirlo a registros internos.
     const registrosConvertidos = await leerRegistrosCat(filePath);
-
     // Fase 3: validar datos y descartar duplicados.
     const records = prepararRegistros(registrosConvertidos, summary);
 
@@ -387,8 +417,55 @@ export const extractCAT = async (
                 continue;
             }
 
+            const codigoPostalGPS = coordenadas.codigoPostal;
+            if (!codigoPostalGPS) {
+                const motivo = 'El GPS no devolvió un código postal válido';
+                summary.rechazados.push({ registro: record.nombre, motivo });
+                console.warn(red(`[CAT] Rechazado - ${record.nombre}: ${motivo}`));
+                continue;
+            }
+
+            let codigoPostal = record.codigoPostal;
+            const provinciaCPGPS = PROVINCIA_POR_PREFIJO_POSTAL[codigoPostalGPS.slice(0, 2)];
+            if (!provinciaCPGPS) {
+                const motivo = `El CP devuelto por GPS ("${codigoPostalGPS}") no tiene un prefijo reconocido en el diccionario`;
+                summary.rechazados.push({ registro: record.nombre, motivo });
+                console.warn(red(`[CAT] Rechazado - ${record.nombre}: ${motivo}`));
+                continue;
+            }
+
+            const provinciaCPRegistro = codigoPostal
+                ? PROVINCIA_POR_PREFIJO_POSTAL[codigoPostal.slice(0, 2)]
+                : undefined;
+            if (!provinciaCPRegistro) {
+                if (record.codigoPostalOriginal) {
+                    console.warn(red(
+                        `[CAT] El código postal "${record.codigoPostalOriginal}" obtenido de la fuente de datos no coincide con el municipio "${record.municipio}" o no es válido; se usará el CP "${codigoPostalGPS}" obtenido con las coordenadas GPS.`
+                    ));
+                }
+                const codigoPostalAnterior = codigoPostal;
+                codigoPostal = codigoPostalGPS;
+                summary.reparados.push({
+                    registro: record.nombre,
+                    motivo: codigoPostalAnterior
+                        ? `Código postal modificado de "${codigoPostalAnterior}" a "${codigoPostal}" porque no coincidía con la provincia`
+                        : `Código postal obtenido desde GPS: ${codigoPostal}`
+                });
+                console.log(orange(
+                    codigoPostalAnterior
+                        ? `[CAT] Código postal modificado para "${record.nombre}": ${codigoPostalAnterior} -> ${codigoPostal}`
+                        : `[CAT] Código postal obtenido desde GPS para "${record.nombre}": ${codigoPostal}`
+                ));
+            }
+            const provincia = PROVINCIA_POR_PREFIJO_POSTAL[codigoPostal.slice(0, 2)];
+            if (!provincia) {
+                summary.rechazados.push({ registro: record.nombre, motivo: `Código postal sin provincia reconocida: ${codigoPostal}` });
+                console.warn(red(`[CAT] Rechazado - ${record.nombre}: Código postal sin provincia reconocida: ${codigoPostal}`));
+                continue;
+            }
+
             // Fase 6: crear relaciones e insertar la entidad en MongoDB.
-            const resultadoGuardado = await guardarEntidadCat(record, coordenadas);
+            const resultadoGuardado = await guardarEntidadCat({ ...record, codigoPostal, provincia }, coordenadas);
             if (resultadoGuardado.provinciaNueva) summary.provincias += 1;
             if (resultadoGuardado.localidadNueva) summary.localidades += 1;
             summary.entidades += 1;
